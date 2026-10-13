@@ -497,7 +497,11 @@ function setMode(m) {
   hint(MODE_HINT[m]);
 }
 document.querySelectorAll('#modes button[data-mode]').forEach(b => b.onclick = () => setMode(b.dataset.mode));
-$('btnModeItems').onclick = () => openItems('draw');
+// 下の「部材」: すぐ追加の入力を出す(一覧・貼り付けはその中から)
+$('btnModeItems').onclick = async () => {
+  const it = await editItem(null, true);
+  if (it) { P.activeItem = it.id; S.pend = null; changed(); renderItemBar(); redraw(); if (S.mode !== 'pick') setMode('pick'); toast('「' + it.name + '」を追加しました。そのまま拾えます'); }
+};
 $('btnOrtho').onclick = () => { S.ortho = !S.ortho; $('btnOrtho').classList.toggle('on', S.ortho); toast('直角 ' + (S.ortho ? 'ON(水平・垂直だけ)' : 'OFF')); };
 
 /* ── 見直し ── */
@@ -701,7 +705,7 @@ function renderItems() {
   }).join('') || '<div class="empty">部材がありません。右上の「＋」で1つずつ、「貼り付け」で Excel からまとめて追加できます。</div>') + '</div>';
   $('itemsBody').querySelectorAll('.row').forEach(r => r.onclick = () => editItem(itemOf(P, +r.dataset.id)).then(renderItems));
 }
-async function editItem(it) {
+async function editItem(it, fromBar) {
   const isNew = !it, v = it || { name: '', kind: 'mem', w: '', bolt: '', cat: '', color: genColor(P.items.length + 1) };
   const r = await dialog(isNew ? '部材を追加' : '部材を直す', `
     <label>部材名</label><input id="eNm" value="${esc(v.name)}">
@@ -711,10 +715,11 @@ async function editItem(it) {
     <div><label>柱/G/B/他</label><select id="eC"><option value="">名前から(G→G、B→B)</option>${CATS.map(c => `<option${v.cat === c ? ' selected' : ''}>${c}</option>`).join('')}</select></div></div>
     <label>色</label><input id="eCol" type="color" value="${v.color}" style="height:44px;padding:2px">
     <p style="font-size:12.5px;color:var(--ink2);margin-top:8px">個: タップ1回で数える / m: 2点で長さ / 部材: 2点で長さ→重量→吊・手付</p>`,
-    [...(isNew ? [] : [{ label: '消す', cls: 'warn', value: 'del' }]), { label: 'やめる', value: null },
+    [...(isNew ? [] : [{ label: '消す', cls: 'warn', value: 'del' }]), ...(fromBar ? [{ label: '一覧・貼り付け', value: 'list' }] : []), { label: 'やめる', value: null },
      { label: 'OK', cls: 'pri', read: () => { const nm = $('eNm').value.trim(); if (!nm) { toast('部材名を入れてください'); return false; }
         return { name: nm, kind: $('eKd').value, w: parseFloat($('eW').value) || 0, bolt: parseFloat($('eB').value) || 0, cat: $('eC').value, color: $('eCol').value }; } }]);
   if (!r) return null;
+  if (r === 'list') { openItems('draw'); return null; }
   if (r === 'del') {
     const n = P.pages.reduce((s, pg) => s + pg.dots.filter(d => d.it === it.id).length + pg.lens.filter(l => l.it === it.id).length, 0);
     if (n && !(await confirmDlg('部材を消す', '「' + it.name + '」で拾った印 ' + n + '件も一緒に消えます。', '消す', 'warn'))) return null;
