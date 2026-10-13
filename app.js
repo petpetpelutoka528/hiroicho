@@ -490,13 +490,14 @@ const MODE_HINT = {
 function setMode(m) {
   if (S.mode === m && m === 'pick' && S.pend) { S.pend = null; redraw(); hint('描きかけをやめました', 1500); return; }
   S.mode = m; S.pend = null; S.zonePts = []; S.scalePts = [];
-  document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
+  document.querySelectorAll('#modes button[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('revBar').classList.toggle('hidden', m !== 'review');
   $('itemBar').classList.toggle('hidden', m === 'review');
   if (m === 'review') startReview(); else redraw();
   hint(MODE_HINT[m]);
 }
-document.querySelectorAll('#modes button').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+document.querySelectorAll('#modes button[data-mode]').forEach(b => b.onclick = () => setMode(b.dataset.mode));
+$('btnModeItems').onclick = () => openItems('draw');
 $('btnOrtho').onclick = () => { S.ortho = !S.ortho; $('btnOrtho').classList.toggle('on', S.ortho); toast('直角 ' + (S.ortho ? 'ON(水平・垂直だけ)' : 'OFF')); };
 
 /* ── 見直し ── */

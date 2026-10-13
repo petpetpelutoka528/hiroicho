@@ -39,9 +39,10 @@
 <section id="draw" class="screen hidden">
   <header class="bar">
     <button class="ibtn" id="btnBack" aria-label="案件の一覧へ">‹</button>
-    <button class="chip" id="btnPage"><span id="pageLbl">P1</span> ▾</button>
-    <button class="chip" id="btnScale"><span id="scaleLbl">縮尺 —</span></button>
-    <span class="grow"></span>
+    <div class="hscroll" id="topChips">
+      <button class="chip" id="btnPage"><span id="pageLbl">P1</span> ▾</button>
+      <button class="chip" id="btnScale"><span id="scaleLbl">縮尺 —</span></button>
+    </div>
     <button class="ibtn small" id="btnUndo" aria-label="元に戻す" title="元に戻す">↶</button>
     <button class="ibtn" id="btnLedger" aria-label="台帳">台帳</button>
   </header>
@@ -88,6 +89,7 @@
 
   <nav id="modes">
     <button data-mode="pick" class="on">拾い</button>
+    <button id="btnModeItems">部材</button>
     <button data-mode="zone">工区</button>
     <button data-mode="scale">縮尺</button>
     <button data-mode="review">見直し</button>

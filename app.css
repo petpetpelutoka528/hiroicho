@@ -73,8 +73,11 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 .tg{height:40px;padding:0 10px;border:1px solid var(--rule2);border-radius:10px;font-size:13px;color:var(--ink2)}
 .tg.on{background:var(--acc);border-color:var(--acc);color:#fff}
 
-#modes{display:flex;background:var(--card);border-top:1px solid var(--rule);padding:0 0 var(--sab);flex:none}
-#modes button{flex:1;height:48px;font-size:14px;color:var(--ink2);border-top:3px solid transparent}
+#modes{display:flex;background:var(--card);border-top:1px solid var(--rule);padding:0 0 var(--sab);flex:none;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none}
+#modes::-webkit-scrollbar,.hscroll::-webkit-scrollbar{display:none}
+.hscroll{flex:1;min-width:0;display:flex;gap:6px;align-items:center;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:2px 0}
+.hscroll .chip{flex:none}
+#modes button{flex:1 0 auto;min-width:68px;padding:0 10px;height:48px;font-size:14px;color:var(--ink2);border-top:3px solid transparent;white-space:nowrap}
 #modes button.on{color:var(--acc);font-weight:700;border-top-color:var(--acc)}
 
 #revBar{background:var(--card);border-top:1px solid var(--rule);padding:6px 8px;flex:none}
