@@ -272,6 +272,7 @@ function redraw() {
     const g = el('g', { opacity: faded(l) ? 0.3 : 1 }, svg);
     el('line', { x1: l.x1, y1: l.y1, x2: l.x2, y2: l.y2, stroke: col, 'stroke-width': 3 * k, 'stroke-linecap': 'round', 'stroke-dasharray': j === '手付' ? `${7 * k} ${4 * k}` : 'none' }, g);
     if (S.mode === 'review' && l.rv) el('line', { x1: l.x1, y1: l.y1, x2: l.x2, y2: l.y2, stroke: '#2f7a4a', 'stroke-width': 1.2 * k }, g);
+    if (needsZone(pg, l)) { const m = markPt(l); const q = el('text', { x: m.x, y: m.y + 16 * k, 'font-size': 11 * k, 'font-weight': 700, fill: '#b0451c', 'text-anchor': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3 * k }, g); q.textContent = '工区?'; }
     if (!faded(l) && pg.scale && Viewer.s > Viewer.fitS() * 1.4) {
       const m = markPt(l), d = Math.hypot(l.x2 - l.x1, l.y2 - l.y1) || 1;
       let ox = (l.y2 - l.y1) / d * 9 * k, oy = -(l.x2 - l.x1) / d * 9 * k; if (oy > 0 || (oy === 0 && ox > 0)) { ox = -ox; oy = -oy; }
@@ -339,7 +340,8 @@ function markText(o, pg) {
   const it = itemOf(P, o.it); if (!it) return '(部材の一覧にない)';
   if (o.x1 === undefined) return it.name + '  ' + KIND[it.kind].lbl;
   const mm = lenMm(pg, o), kg = lineKg(it, mm), j = judge(P, it, kg);
-  return it.name + '  ' + (pg.scale ? n0(mm) + 'mm' : '縮尺未設定') + (kg ? '  ' + kg.toFixed(1) + 'kg' : '') + (j ? '  ' + j : '');
+  const zt = pg.zones.length ? (needsZone(pg, o) ? '  工区:未定' : '  ' + (zoneOfMark(pg, o) || '工区外')) : '';
+  return it.name + '  ' + (pg.scale ? n0(mm) + 'mm' : '縮尺未設定') + (kg ? '  ' + kg.toFixed(1) + 'kg' : '') + (j ? '  ' + j : '') + zt;
 }
 
 /* ── タップ ── */
@@ -377,6 +379,7 @@ function pickTap(p, e, placed) {
     const l = { id: nextId(P), it: it.id, x1: S.pend.x, y1: S.pend.y, x2: q.x, y2: q.y };
     pg.lens.push(l); S.pend = null; changed(); redraw(); renderItemBar();
     hint(markText(l, pg), 2500);
+    if (needsZone(pg, l)) chooseZone(l, pg);
     return;
   }
   if (!placed) {
@@ -432,6 +435,18 @@ async function applyScale(n) {
   changed(); renderScaleLbl(); redraw(); renderItemBar(); toast('縮尺 1/' + n + ' にしました(拾った長さも計算し直し)');
 }
 
+/* ── 工区をまたぐ線: どの工区に入れるか自分で選ぶ ── */
+async function chooseZone(l, pg) {
+  const t = zonesTouched(pg, l);
+  const btns = t.names.map(n => ({ label: n, cls: l.zn === n ? 'pri' : '', value: n }));
+  if (t.out) btns.push({ label: '工区外', cls: l.zn === '__none' ? 'pri' : '', value: '__none' });
+  btns.push({ label: 'あとで決める', value: null });
+  const r = await dialog('どの工区に入れますか', '<p>' + esc(markText(l, pg)) + '</p><p>この線は工区の境界をまたいでいます。</p>', btns);
+  if (r === null || r === undefined || r === true) return false;
+  push(); l.zn = r; changed(); redraw(); toast((r === '__none' ? '工区外' : r) + ' に入れました');
+  return true;
+}
+
 /* ── 印・工区のメニュー ── */
 function hidePop() { $('pop').classList.add('hidden'); }
 function popAt(e, html, actions) {
@@ -445,7 +460,8 @@ function popAt(e, html, actions) {
 function markPop(o, e) {
   const pg = curPage(), it = itemOf(P, o.it);
   popAt(e, `<div class="pt">${esc(markText(o, pg))}${o.rv ? '  ✓見直し済み' : ''}</div>
-    <button data-a="sel">この部材を選ぶ</button>${o.rv ? '' : '<button data-a="ok">見直し OK にする</button>'}<button data-a="del" class="warn">この印を消す</button><button data-a="x">閉じる</button>`, {
+    <button data-a="sel">この部材を選ぶ</button>${o.rv ? '' : '<button data-a="ok">見直し OK にする</button>'}${o.x1 !== undefined && pg.zones.length ? '<button data-a="zn">入れる工区を選ぶ</button>' : ''}<button data-a="del" class="warn">この印を消す</button><button data-a="x">閉じる</button>`, {
+    zn: () => chooseZone(o, pg),
     sel: () => { if (it) { P.activeItem = it.id; changed(); renderItemBar(); redraw(); } },
     ok: () => { push(); o.rv = true; changed(); redraw(); },
     del: () => { push(); removeMark(o); changed(); redraw(); renderItemBar(); toast('消しました'); },
@@ -455,7 +471,9 @@ function markPop(o, e) {
 function zonePop(z, e, q) {
   popAt(e, `<div class="pt">工区「${esc(z.name)}」</div><button data-a="draw">ここから新しい工区を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
     draw: () => { S.zonePts = [q]; redraw(); },
-    ren: async () => { const v = await askText('工区の名前', '新しい名前', z.name); if (v && v.trim()) { push(); z.name = v.trim(); changed(); redraw(); } },
+    ren: async () => { const v = await askText('工区の名前', '新しい名前', z.name); if (v && v.trim()) { push(); const pg = curPage(), old = z.name; z.name = v.trim();
+      if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) l.zn = z.name; });   // 選んであった工区も新しい名前に
+      changed(); redraw(); } },
     del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); pg.zones.splice(pg.zones.indexOf(z), 1); changed(); redraw(); } },
     x: () => {}
   });
@@ -493,7 +511,8 @@ async function showRev(zoom) {
   const L = S.rev.list, t = totals(P, agg());
   if (!L.length) {
     $('revPos').textContent = '0 / 0';
-    $('revInfo').textContent = S.rev.filter === 'todo' ? (t.n ? '全部の印を見直しました ✓' : '印がありません') : '印がありません';
+    $('revInfo').textContent = S.rev.filter === 'todo' ? (t.n ? '全部の印を見直しました ✓' : '印がありません') : S.rev.filter === 'cross' ? '工区をまたいで未定の線はありません ✓' : '印がありません';
+    $('revZone').classList.add('hidden');
     redraw(); return;
   }
   S.rev.i = Math.max(0, Math.min(L.length - 1, S.rev.i));
@@ -504,9 +523,15 @@ async function showRev(zoom) {
   if (zoom || true) Viewer.centerOn(p.x, p.y, s);
   $('revPos').textContent = (S.rev.i + 1) + ' / ' + L.length;
   $('revInfo').textContent = markText(cur.o, pg) + '  ・ ' + pageName(P, cur.pi) + '  ・ 見直し済み ' + t.rv + '/' + t.n;
+  $('revZone').classList.toggle('hidden', !(cur.o.x1 !== undefined && pg.zones.length));
   redraw();
 }
 $('revFilter').onchange = () => startReview();
+$('revZone').onclick = async () => {
+  const cur = S.rev.list[S.rev.i]; if (!cur) return;
+  if (await chooseZone(cur.o, curPage()) && S.rev.filter === 'cross') { S.rev.list.splice(S.rev.i, 1); }
+  showRev();
+};
 $('revPrev').onclick = () => { S.rev.i--; showRev(); };
 $('revNext').onclick = () => { S.rev.i++; showRev(); };
 $('revOk').onclick = () => {
@@ -647,9 +672,14 @@ function renderLedger() {
   } else {
     body.innerHTML = kpi + `<div class="sec"><h3>Excel に書き出す</h3><p>部材・集計・吊材積算・手付積算・工区毎P算出の表を、Excel ファイル(.xlsx)にします。</p>
       <button class="big" id="expX">Excel に書き出す</button>
+      <h3>印刷用の PDF</h3><p>拾った印を描いた図面(線の長さ・部材名・重さ・工区つき)と、その次のページにその図面の部材の表を入れた PDF です。</p>
+      <button class="big ghost" id="expPdf">印刷用の PDF に書き出す</button>
       <h3>案件ファイル(控え・PC との受け渡し)</h3><p>図面と拾った印をまとめた1つのファイルです。PC や別の iPhone の拾い帳で「案件ファイルを読み込む」から開けます。控えとしても保存しておいてください。</p>
       <button class="big ghost" id="expP">案件ファイルに書き出す</button></div>`;
     $('expX').onclick = async () => { busy(true, 'Excel を作っています…'); try { await saveNow(); await shareFile(await Excel.blob(P), P.name + '_拾い帳.xlsx'); } catch (e) { toast(e.message, 4000); } finally { busy(false); } };
+    $('expPdf').onclick = async () => { busy(true, 'PDF を作っています…'); try { await saveNow();
+        const b = await PrintPdf.blob(P, pageSrc, (i, n) => busy(true, 'PDF を作っています… ' + i + ' / ' + n));
+        busy(false); await shareFile(b, P.name + '_拾い図.pdf'); } catch (e) { console.error(e); toast(e.message, 4000); } finally { busy(false); } };
     $('expP').onclick = async () => { busy(true, '書き出し中…'); try { await saveNow(); await shareFile(await Store.exportProj(P), P.name + '.hiroicho'); } catch (e) { toast(e.message, 4000); } finally { busy(false); } };
   }
 }

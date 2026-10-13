@@ -9,9 +9,9 @@
    - 無料プランで GitHub Pages を使うには、リポジトリを **Public** にする必要があります。
    - Public でも、置かれるのはアプリの仕組みだけです。図面や拾ったデータは、それぞれの端末の中にしか保存されません。
    - Private のリポジトリから Pages を出すには有料プラン(GitHub Pro など)が必要です。その場合も、公開されたページ自体は URL を知っていれば誰でも開けます。
-2. ファイルを全部アップロードする(全部で 19 個。フォルダはありません)。
+2. ファイルを全部アップロードする(全部で 22 個。フォルダはありません)。
    - PC: リポジトリの画面の「Add file」→「Upload files」を開き、このフォルダの中のファイルを全部選んで(Ctrl+A)、まとめてドラッグ →「Commit changes」。
-   - iPhone: Safari で github.com を開き、「ぁあ」→「デスクトップ用Webサイトを表示」にしてから「Add file」→「Upload files」→「choose your files」で、ファイルアプリの中の 19 個を全部選ぶ →「Commit changes」。
+   - iPhone: Safari で github.com を開き、「ぁあ」→「デスクトップ用Webサイトを表示」にしてから「Add file」→「Upload files」→「choose your files」で、ファイルアプリの中の 22 個を全部選ぶ →「Commit changes」。
 3. 「Settings」→「Pages」→「Branch」を `main`、フォルダを `/ (root)` にして「Save」。
 4. 1〜2分待つと、`https://(ユーザー名).github.io/hiroicho/` で開けるようになります。
 
@@ -47,6 +47,7 @@ Chrome または Edge で同じ URL を開きます(アドレスバー右の「�
 - 縮尺: 上の「1/100」をタップして数字を入れるか、「2点で合わせる」。
 - 見直し: 印を1つずつ順に表示します。合っていれば「OK → 次」、違えば「消す」。全部 OK になれば見落としなし。台帳の「確認」に、見直しの進み具合と気になる点(二重に拾っていそうな所なども)が出ます。
 - Excel: 台帳 →「書き出し」→「Excel に書き出す」。部材 / 集計 / 吊材積算・手付積算 / 工区毎P算出 の表になります。
+- 印刷用の PDF: 台帳 →「書き出し」→「印刷用の PDF に書き出す」。拾った印を描いた図面(線の長さ・部材名・重さ・工区つき)と、その次のページにその図面の部材の表が入ります。
 
 ## 更新するとき
 
@@ -55,4 +56,5 @@ Chrome または Edge で同じ URL を開きます(アドレスバー右の「�
 ## 中に入っている部品
 
 - PDF の表示: pdf.js(Mozilla, Apache License 2.0) — `LICENSE-pdfjs.txt`(`pdf.min.js` `pdf.worker.min.js`、日本語の文字の対応表 `cmaps.js` も pdf.js のもの)
+- PDF を作る: pdf-lib(MIT License) — `LICENSE-pdflib.txt`(`pdf-lib.min.js`)
 - Excel の書き出し: ExcelJS(MIT License) — `LICENSE-exceljs.txt`(`exceljs.min.js`)

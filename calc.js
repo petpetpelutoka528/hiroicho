@@ -53,7 +53,25 @@ function pip(pts, x, y) {
 }
 function zoneAt(pg, x, y) { for (let i = pg.zones.length - 1; i >= 0; i--) if (pip(pg.zones[i].pts, x, y)) return pg.zones[i]; return null; }
 function markPt(o) { return o.x1 !== undefined ? { x: (o.x1 + o.x2) / 2, y: (o.y1 + o.y2) / 2 } : { x: o.x, y: o.y }; }
-function zoneOfMark(pg, o) { const p = markPt(o), z = zoneAt(pg, p.x, p.y); return z ? z.name : null; }
+/* 印の工区: 自分で選んだ工区(o.zn)があればそれ。なければ印(線は真ん中)の場所の工区 */
+function zoneOfMark(pg, o) {
+  if (o.zn !== undefined) { if (o.zn === '__none') return null; if (pg.zones.some(z => z.name === o.zn)) return o.zn; }
+  const p = markPt(o), z = zoneAt(pg, p.x, p.y); return z ? z.name : null;
+}
+/* 線がかかっている工区(名前)と、工区の外にもはみ出しているか */
+function zonesTouched(pg, l) {
+  const names = [], pts = [{ x: l.x1, y: l.y1 }, { x: l.x2, y: l.y2 }, markPt(l)];
+  let out = false;
+  pts.forEach(p => { if (!zoneAt(pg, p.x, p.y)) out = true; });
+  pg.zones.forEach(z => {
+    let hit = pts.some(p => pip(z.pts, p.x, p.y));
+    if (!hit) for (let i = 0; i < z.pts.length && !hit; i++) { const a = z.pts[i], b = z.pts[(i + 1) % z.pts.length]; if (segX(l.x1, l.y1, l.x2, l.y2, a.x, a.y, b.x, b.y)) hit = true; }
+    if (hit && !names.includes(z.name)) names.push(z.name);
+  });
+  return { names: names.sort(natCmp), out };
+}
+/* 工区をまたいでいて、まだ自分で振り分けていない線 */
+function needsZone(pg, l) { return l.x1 !== undefined && pg.zones.length > 0 && l.zn === undefined && crosses(pg, l); }
 function segX(ax, ay, bx, by, cx, cy, dx, dy) {
   const d = (bx - ax) * (dy - cy) - (by - ay) * (dx - cx); if (!d) return false;
   const t = ((cx - ax) * (dy - cy) - (cy - ay) * (dx - cx)) / d, u = ((cx - ax) * (by - ay) - (cy - ay) * (bx - ax)) / d;
@@ -101,7 +119,7 @@ function aggregate(P) {
     pg.lens.forEach(l => { const it = itemOf(P, l.it); if (!it) return;
       const z = zoneOfMark(pg, l) || '__none', mm = lenMm(pg, l), kg = lineKg(it, mm), j = judge(P, it, kg);
       addTo(M[it.id][z], it, mm, kg, j, l.rv); addTo(T[it.id], it, mm, kg, j, l.rv); addTo(PG[it.id][pi], it, mm, kg, j, l.rv);
-      rows.push({ pi, o: l, it, zone: z, mm, kg, j, cross: pg.zones.length ? crosses(pg, l) : false }); });
+      rows.push({ pi, o: l, it, zone: z, mm, kg, j, cross: needsZone(pg, l) }); });
   });
   const orphan = P.pages.reduce((s, pg) => s + pg.dots.filter(d => !itemOf(P, d.it)).length + pg.lens.filter(l => !itemOf(P, l.it)).length, 0);
   return { cols, M, T, PG, rows, orphan };
@@ -118,7 +136,7 @@ function issues(P, A) {
   const out = [];
   const hasZones = P.pages.some(p => p.zones.length);
   const cross = A.rows.filter(r => r.cross);
-  if (cross.length) out.push('工区の境界をまたいでいる線  ' + cross.length + '件');
+  if (cross.length) out.push('工区をまたいでいて、どちらに入れるか決めていない線  ' + cross.length + '件(見直しの「工区をまたぐ線」で選べます)');
   if (hasZones) { const un = A.rows.filter(r => r.zone === '__none'); if (un.length) out.push('どの工区にも入っていない拾い  ' + un.length + '件'); }
   P.items.filter(it => it.kind === 'mem' && !it.w && A.T[it.id].n).forEach(it => out.push('「' + it.name + '」の単重が未設定(重量・吊/手付が出ません)'));
   P.pages.forEach((pg, pi) => { if (!pg.scale && pg.lens.length) out.push(pageName(P, pi) + ' は縮尺が未設定なのに線があります(長さ0)'); });
@@ -150,7 +168,7 @@ function reviewList(P, filter, itemId) {
   const out = [];
   P.pages.forEach((pg, pi) => {
     const ms = [...pg.dots, ...pg.lens].filter(o => itemOf(P, o.it));
-    ms.forEach(o => { if (filter === 'todo' && o.rv) return; if (filter === 'item' && o.it !== itemId) return;
+    ms.forEach(o => { if (filter === 'todo' && o.rv) return; if (filter === 'item' && o.it !== itemId) return; if (filter === 'cross' && !needsZone(pg, o)) return;
       const p = markPt(o); out.push({ pi, o, k: [pi, order.get(o.it), Math.round(p.y / 80), p.x] }); });
   });
   out.sort((a, b) => { for (let i = 0; i < 4; i++) if (a.k[i] !== b.k[i]) return a.k[i] - b.k[i]; return 0; });

@@ -66,11 +66,13 @@
         <option value="todo">まだ見ていない印</option>
         <option value="all">全部の印</option>
         <option value="item">選んでいる部材だけ</option>
+        <option value="cross">工区をまたぐ線(未定)</option>
       </select>
     </div>
     <div class="revBtns">
       <button id="revPrev">‹ 前</button>
       <button id="revDel" class="warn">消す</button>
+      <button id="revZone" class="hidden">工区</button>
       <button id="revOk" class="ok">OK → 次</button>
       <button id="revNext">次 ›</button>
     </div>
@@ -153,6 +155,7 @@
 <script src="store.js"></script>
 <script src="viewer.js"></script>
 <script src="excel.js"></script>
+<script src="printpdf.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
