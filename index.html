@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<!-- 外に送らないための決まり: このアプリは自分のサイト(GitHub Pages)以外とは通信しない -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="拾い帳">
+<meta name="theme-color" content="#f7f5f1">
+<title>拾い帳</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<!-- ═════════ 案件の一覧 ═════════ -->
+<section id="home" class="screen">
+  <header class="bar">
+    <h1>拾い帳</h1>
+    <span class="grow"></span>
+    <button class="ibtn" id="btnHomeMenu" aria-label="メニュー">⋯</button>
+  </header>
+  <div class="scroll">
+    <div id="projList"></div>
+    <div class="homeActions">
+      <button class="big" id="btnNewProj">＋ 新しい案件(図面を選ぶ)</button>
+      <button class="big ghost" id="btnImport">案件ファイルを読み込む</button>
+    </div>
+    <p class="note" id="storeNote"></p>
+  </div>
+</section>
+
+<!-- ═════════ 図面 ═════════ -->
+<section id="draw" class="screen hidden">
+  <header class="bar">
+    <button class="ibtn" id="btnBack" aria-label="案件の一覧へ">‹</button>
+    <button class="chip" id="btnPage"><span id="pageLbl">P1</span> ▾</button>
+    <button class="chip" id="btnScale"><span id="scaleLbl">縮尺 —</span></button>
+    <span class="grow"></span>
+    <button class="ibtn small" id="btnUndo" aria-label="元に戻す" title="元に戻す">↶</button>
+    <button class="ibtn" id="btnLedger" aria-label="台帳">台帳</button>
+  </header>
+
+  <div id="view">
+    <div id="sheet">
+      <canvas id="baseC"></canvas>
+      <canvas id="detC"></canvas>
+      <svg id="ovl" xmlns="http://www.w3.org/2000/svg"></svg>
+    </div>
+    <div id="loupe"><canvas id="loupeC" width="240" height="240"></canvas><i></i></div>
+    <div id="hint"></div>
+    <div id="busy">読み込み中…</div>
+  </div>
+
+  <!-- 見直し -->
+  <div id="revBar" class="hidden">
+    <div class="revTop">
+      <b id="revPos">0 / 0</b>
+      <span id="revInfo"></span>
+      <select id="revFilter">
+        <option value="todo">まだ見ていない印</option>
+        <option value="all">全部の印</option>
+        <option value="item">選んでいる部材だけ</option>
+      </select>
+    </div>
+    <div class="revBtns">
+      <button id="revPrev">‹ 前</button>
+      <button id="revDel" class="warn">消す</button>
+      <button id="revOk" class="ok">OK → 次</button>
+      <button id="revNext">次 ›</button>
+    </div>
+  </div>
+
+  <!-- 部材 -->
+  <div id="itemBar">
+    <button class="ibtn" id="itPrev" aria-label="前の部材">‹</button>
+    <button id="itCur"><i id="itDot"></i><span id="itName">部材を選ぶ</span><small id="itCnt"></small></button>
+    <button class="ibtn" id="itNext" aria-label="次の部材">›</button>
+    <button class="tg" id="btnOrtho" title="水平・垂直に固定">直角</button>
+  </div>
+
+  <nav id="modes">
+    <button data-mode="pick" class="on">拾い</button>
+    <button data-mode="zone">工区</button>
+    <button data-mode="scale">縮尺</button>
+    <button data-mode="review">見直し</button>
+    <button data-mode="view">移動</button>
+  </nav>
+</section>
+
+<!-- ═════════ 台帳 ═════════ -->
+<section id="ledger" class="screen hidden">
+  <header class="bar">
+    <button class="ibtn" id="btnLedgerBack" aria-label="図面へ">‹</button>
+    <h1>台帳</h1>
+    <span class="grow"></span>
+    <button class="ibtn" id="btnItems">部材の編集</button>
+  </header>
+  <div class="seg" id="ledSeg">
+    <button data-tab="items" class="on">部材</button>
+    <button data-tab="zones">集計</button>
+    <button data-tab="check">確認</button>
+    <button data-tab="out">書き出し</button>
+  </div>
+  <div class="scroll" id="ledBody"></div>
+</section>
+
+<!-- ═════════ 部材の編集 ═════════ -->
+<section id="items" class="screen hidden">
+  <header class="bar">
+    <button class="ibtn" id="btnItemsBack" aria-label="戻る">‹</button>
+    <h1>部材の編集</h1>
+    <span class="grow"></span>
+    <button class="ibtn" id="btnPaste">貼り付け</button>
+    <button class="ibtn" id="btnAddItem">＋</button>
+  </header>
+  <div class="thRow">吊/手付の境目 <input id="thIn" type="number" inputmode="decimal" min="0" step="0.5"> kg 以上を「吊」</div>
+  <div class="scroll" id="itemsBody"></div>
+</section>
+
+<!-- 下から出る一覧(部材を選ぶ・ページを選ぶ) -->
+<div id="sheetBg" class="hidden"></div>
+<div id="bsheet" class="hidden">
+  <div class="bsHead"><b id="bsTitle"></b><span class="grow"></span><button class="ibtn" id="bsClose">閉じる</button></div>
+  <input id="bsSearch" type="search" placeholder="名前で探す(一部でよい)" autocomplete="off">
+  <div id="bsBody" class="scroll"></div>
+</div>
+
+<!-- 印をタップしたときのメニュー -->
+<div id="pop" class="hidden"></div>
+
+<!-- 入力の窓 -->
+<div id="dlgBg" class="hidden">
+  <div id="dlg">
+    <h2 id="dlgTitle"></h2>
+    <div id="dlgBody"></div>
+    <div class="dlgBtns" id="dlgBtns"></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<input type="file" id="fFiles" accept="application/pdf,.pdf,image/jpeg,image/png" multiple hidden>
+<input type="file" id="fImport" hidden>
+
+<script src="pdf.min.js"></script>
+<script src="cmaps.js"></script>
+<script src="calc.js"></script>
+<script src="store.js"></script>
+<script src="viewer.js"></script>
+<script src="excel.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
