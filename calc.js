@@ -86,6 +86,15 @@ function distSeg(px, py, x1, y1, x2, y2) {
   let t = L ? ((px - x1) * dx + (py - y1) * dy) / L : 0; t = Math.max(0, Math.min(1, t));
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
+/* ── 伏図の範囲(1枚の図面に 2F・3F… と並んでいるとき) ── */
+function secsOf(pg) { return (pg && pg.secs) || []; }
+function secAt(pg, x, y) { const ss = secsOf(pg); for (let i = ss.length - 1; i >= 0; i--) if (pip(ss[i].pts, x, y)) return ss[i]; return null; }
+function polyC(pts) { return pts.reduce((a, p) => ({ x: a.x + p.x / pts.length, y: a.y + p.y / pts.length }), { x: 0, y: 0 }); }
+/* 印の「かたまり」(工区毎P算出の 数量1・数量2… の単位): 伏図の範囲があればその名前、なければ図面の名前 */
+function blockOf(P, pi, o) {
+  const pg = P.pages[pi]; if (!secsOf(pg).length) return pageName(P, pi);
+  const p = markPt(o), s = secAt(pg, p.x, p.y); return s ? s.name : pageName(P, pi) + '(伏図の外)';
+}
 function zoneNames(P) {
   const seen = new Map();
   P.pages.forEach(p => p.zones.forEach(z => { if (!seen.has(z.name)) seen.set(z.name, z.color); }));
@@ -115,14 +124,34 @@ function aggregate(P) {
     pg.dots.forEach(d => { const it = itemOf(P, d.it); if (!it) return;
       const z = zoneOfMark(pg, d) || '__none', kg = it.w || 0;
       addTo(M[it.id][z], it, 0, kg, '', d.rv); addTo(T[it.id], it, 0, kg, '', d.rv); addTo(PG[it.id][pi], it, 0, kg, '', d.rv);
-      rows.push({ pi, o: d, it, zone: z, mm: 0, kg, j: '', cross: false }); });
+      rows.push({ pi, o: d, it, zone: z, blk: blockOf(P, pi, d), mm: 0, kg, j: '', cross: false }); });
     pg.lens.forEach(l => { const it = itemOf(P, l.it); if (!it) return;
       const z = zoneOfMark(pg, l) || '__none', mm = lenMm(pg, l), kg = lineKg(it, mm), j = judge(P, it, kg);
       addTo(M[it.id][z], it, mm, kg, j, l.rv); addTo(T[it.id], it, mm, kg, j, l.rv); addTo(PG[it.id][pi], it, mm, kg, j, l.rv);
-      rows.push({ pi, o: l, it, zone: z, mm, kg, j, cross: needsZone(pg, l) }); });
+      rows.push({ pi, o: l, it, zone: z, blk: blockOf(P, pi, l), mm, kg, j, cross: needsZone(pg, l) }); });
   });
   const orphan = P.pages.reduce((s, pg) => s + pg.dots.filter(d => !itemOf(P, d.it)).length + pg.lens.filter(l => !itemOf(P, l.it)).length, 0);
   return { cols, M, T, PG, rows, orphan };
+}
+/* 工区毎P算出: 伏図(かたまり) × 工区 × 柱/G/B/他。mode = 'sl'(吊の本数) / 'hd'(手付の本数) / 'len'(部材の長さ m) */
+const ZCATS = ['柱', 'G', 'B', '他'];
+const ZMODE = { sl: '吊(本)', hd: '手付(本)', len: '長さ(m)' };
+function zoneTable(P, A, mode) {
+  const blocks = [];
+  P.pages.forEach((pg, pi) => {
+    const ss = secsOf(pg);
+    if (!ss.length) { const n = pageName(P, pi); if (!blocks.includes(n)) blocks.push(n); }
+    else ss.map(s => s.name).sort(natCmp).forEach(n => { if (!blocks.includes(n)) blocks.push(n); });
+  });
+  const V = {}, use = rw => rw.it.kind === 'mem' && (mode === 'len' ? true : rw.j === (mode === 'hd' ? '手付' : '吊'));
+  let outside = false;
+  A.rows.forEach(rw => { if (!use(rw)) return;
+    if (!blocks.includes(rw.blk)) blocks.push(rw.blk);
+    const z = rw.zone === '__none' ? '' : rw.zone; if (!z) outside = true;
+    const k = rw.blk + '|' + z + '|' + catOf(rw.it); V[k] = (V[k] || 0) + (mode === 'len' ? rw.mm / 1000 : 1); });
+  const zones = [...zoneNames(P), ...(outside ? [''] : [])];
+  const get = (b, z, c) => V[b + '|' + z + '|' + c] || 0;
+  return { blocks, zones, get };
 }
 function qtyTxt(it, c) { if (!c || !c.n) return ''; return it.kind === 'm' ? (c.mm / 1000).toFixed(2) : String(c.n); }
 function totals(P, A) {

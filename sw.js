@@ -1,7 +1,7 @@
 'use strict';
 /* 電波がなくても使えるように、アプリの部品をこの端末にしまっておく */
-const VER = 'hiroicho-v5';
-const CORE = ["./", "index.html", "app.css", "calc.js", "store.js", "viewer.js", "excel.js", "app.js", "cmaps.js", "manifest.webmanifest", "pdf.min.js", "pdf.worker.min.js", "exceljs.min.js", "pdf-lib.min.js", "printpdf.js", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
+const VER = 'hiroicho-v7';
+const CORE = ["./", "index.html", "app.css", "calc.js", "store.js", "viewer.js", "excel.js", "app.js", "cmaps.js", "manifest.webmanifest", "pdf.min.js", "pdf.worker.min.js", "exceljs.min.js", "pdf-lib.min.js", "printpdf.js", "presets.js", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VER).then(c => c.addAll(CORE.map(u => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });

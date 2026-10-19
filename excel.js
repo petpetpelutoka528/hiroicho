@@ -1,7 +1,7 @@
 'use strict';
 /* ═══════════════════════════════════════════════════════════
    Excel に書き出す(Excel 版と同じ表)
-   部材 / 集計 / 吊材積算・手付積算 / 工区毎P算出
+   部材 / 集計 / 吊材積算・手付積算 / 工区毎P算出(吊)・工区毎_手付・工区毎_長さm
 ═══════════════════════════════════════════════════════════ */
 const Excel = (() => {
   let loading = null;
@@ -28,7 +28,7 @@ const Excel = (() => {
       const x = ws.getCell(r, c); x.border = Object.assign({}, x.border, { bottom: r === r1 ? THICK : DOT });
     }
   }
-  const argb = hex => 'FF' + String(hex || '#999999').replace('#', '').toUpperCase();
+  const argb = c => { let h = String(c || '').replace('#', ''); if (/^[0-9a-f]{3}$/i.test(h)) h = h.replace(/./g, x => x + x); return 'FF' + (/^[0-9a-f]{6}$/i.test(h) ? h.toUpperCase() : '888888'); };
 
   async function build(P) {
     await load();
@@ -142,38 +142,47 @@ const Excel = (() => {
       ws.getColumn(9).width = 6;
     }
 
-    /* ── 工区毎P算出(図面の数だけ: 柱 G B 他 軸 軸 軸 小計) ── */
-    {
-      const ws = wb.addWorksheet('工区毎P算出', { views: [{ showGridLines: false }] });
+    /* ── 工区毎P算出(伏図の数だけ: 柱 G B 他 軸 軸 軸 小計)。吊・手付・長さの3枚 ── */
+    [['sl', '工区毎P算出', '工区毎P算出(吊)'], ['hd', '工区毎_手付', '工区毎(手付の本数)'], ['len', '工区毎_長さm', '工区毎(部材の長さ m)']].forEach(([mode, sheet, head]) => {
+      const ws = wb.addWorksheet(sheet, { views: [{ showGridLines: false }] });
       const cats = ['柱', 'G', 'B', '他', '軸', '軸', '軸', '小計'];
-      const np = P.pages.length, lastC = 1 + np * 8 + 1;
-      title(ws, 1, 1, lastC, '工区毎P算出');
-      // 工区 × 図面 × 区分 の吊の本数
-      const zp = {};
-      A.rows.forEach(rw => { if (rw.j !== '吊') return; const k = (rw.zone === '__none' ? '' : rw.zone) + '|' + rw.pi + '|' + catOf(rw.it); zp[k] = (zp[k] || 0) + 1; });
-      const zs = zoneNames(P); const hasNone = Object.keys(zp).some(k => k.startsWith('|'));
-      const zlist = [...zs, ...(hasNone ? [''] : [])];
-      const nShow = Math.max(15, zlist.length);
+      const Z = zoneTable(P, A, mode), nb = Math.max(1, Z.blocks.length), lastC = 1 + nb * 8 + 1;
+      const FMT = mode === 'len' ? '0.0;-0.0;;@' : '0;-0;;@';
+      title(ws, 1, 1, lastC, head);
+      const nShow = Math.max(15, Z.zones.length);
       ws.getCell(4, 1).value = '工区名';
-      for (let j = 0; j < np; j++) {
-        const x = ws.getCell(3, 1 + (j + 1) * 8); x.value = pageName(P, j); x.alignment = { horizontal: 'right' };
+      for (let j = 0; j < nb; j++) {
+        const x = ws.getCell(3, 1 + (j + 1) * 8); x.value = Z.blocks[j] || ''; x.alignment = { horizontal: 'right' };
         cats.forEach((c, k) => ws.getCell(4, 2 + j * 8 + k).value = c);
       }
       ws.getCell(4, lastC).value = '合計';
-      zlist.forEach((z, i) => {
+      Z.zones.forEach((z, i) => {
         ws.getCell(5 + i, 1).value = z === '' ? '(工区外)' : z;
-        for (let j = 0; j < np; j++) for (let k = 0; k < 4; k++) { const v = zp[z + '|' + j + '|' + cats[k]]; if (v) ws.getCell(5 + i, 2 + j * 8 + k).value = v; }
+        for (let j = 0; j < Z.blocks.length; j++) for (let k = 0; k < 4; k++) {
+          const v = Z.get(Z.blocks[j], z, cats[k]); if (v) ws.getCell(5 + i, 2 + j * 8 + k).value = mode === 'len' ? Math.round(v * 10) / 10 : v; }
       });
+      // 小計(伏図ごと)と 合計(全部の伏図)。軸の列は手で入れる用(入れれば小計に入る)
+      const CL = c => ws.getColumn(c).letter;
+      for (let i = 0; i <= nShow; i++) { const r = 5 + i, subs = [], foot = i === nShow;
+        for (let j = 0; j < nb; j++) { const c0 = 2 + j * 8; subs.push(CL(c0 + 7) + r);
+          if (foot) for (let k = 0; k < 8; k++) { const x = ws.getCell(r, c0 + k); x.value = { formula: `SUM(${CL(c0 + k)}5:${CL(c0 + k)}${r - 1})` }; x.numFmt = FMT; }
+          else { const x = ws.getCell(r, c0 + 7); x.value = { formula: `SUM(${CL(c0)}${r}:${CL(c0 + 6)}${r})` }; x.numFmt = FMT; }
+          for (let k = 0; k < 7; k++) ws.getCell(r, c0 + k).numFmt = FMT; }
+        const t = ws.getCell(r, lastC); t.value = { formula: 'SUM(' + subs.join(',') + ')' }; t.numFmt = FMT; }
+      ws.getCell(5 + nShow, 1).value = '計';
       const thin = { style: 'thin', color: { argb: 'FFC8C8C8' } };
-      for (let r = 3; r <= 4 + nShow; r++) for (let c = 1; c <= lastC; c++) {
-        const x = ws.getCell(r, c); x.font = f9(); if (c > 1 && r !== 3) x.alignment = { horizontal: 'right' };
+      for (let r = 3; r <= 5 + nShow; r++) for (let c = 1; c <= lastC; c++) {
+        const x = ws.getCell(r, c); x.font = f9(r === 5 + nShow || (c > 1 && (c - 1) % 8 === 0) || c === lastC ? { bold: true } : {}); if (c > 1 && r !== 3) x.alignment = { horizontal: 'right' };
         const b = {};
-        if (r >= 5) { b.bottom = r === 4 + nShow ? THICK : thin; if (r === 5) b.top = thin; }
+        if (r >= 5) { b.bottom = r >= 4 + nShow ? THICK : thin; if (r === 5) b.top = thin; }
         if (c >= 2 && (c - 2) % 8 === 0) b.left = thin;
+        if (c === lastC) b.left = thin;
         x.border = b;
       }
-      ws.getColumn(1).width = 10; for (let c = 2; c < lastC; c++) ws.getColumn(c).width = 3.5; ws.getColumn(lastC).width = 6;
-    }
+      ws.getColumn(1).width = 10;
+      for (let c = 2; c < lastC; c++) ws.getColumn(c).width = (c - 1) % 8 === 0 ? 6 : (mode === 'len' ? 6 : 4.2);
+      ws.getColumn(lastC).width = 8;
+    });
     return wb;
   }
   async function blob(P) {

@@ -16,12 +16,14 @@ const PrintPdf = (() => {
   }
   const DPI = 200;
   const FONT = '-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo","Noto Sans CJK JP",sans-serif';
-  const toBytes = c => new Promise(res => c.toBlob(b => b.arrayBuffer().then(a => res(new Uint8Array(a))), 'image/jpeg', 0.88));
+  const MAXPX = 15e6;                                      // iPhone の canvas の上限(約1670万画素)より少なく
+  const toBytes = c => new Promise((res, rej) => c.toBlob(b => b ? b.arrayBuffer().then(a => res(new Uint8Array(a)), rej) : rej(new Error('PDF の画像を作れませんでした(図面が大きすぎます)')), 'image/jpeg', 0.88));
+  const dpiFor = (wPt, hPt) => Math.min(DPI, 72 * Math.sqrt(MAXPX / (wPt * hPt)));
 
   /* 図面 + 印 */
   async function drawingCanvas(P, pi, src) {
     const pg = P.pages[pi];
-    const pxPerPt = DPI / 72, k = pxPerPt / RS;           // 1u あたりの px
+    const pxPerPt = dpiFor(src.w / RS, src.h / RS) / 72, k = pxPerPt / RS;   // 1u あたりの px
     const c = document.createElement('canvas');
     c.width = Math.round(src.w * k); c.height = Math.round(src.h * k);
     const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
@@ -38,6 +40,14 @@ const PrintPdf = (() => {
       } else { ctx.lineWidth = pt(2.2); ctx.strokeStyle = '#fff'; ctx.strokeText(txt, x, y); }
       ctx.fillStyle = col; ctx.fillText(txt, x, y);
     };
+    // 伏図の範囲
+    secsOf(pg).forEach(sc => {
+      ctx.beginPath(); sc.pts.forEach((p, i) => i ? ctx.lineTo(p.x * k, p.y * k) : ctx.moveTo(p.x * k, p.y * k)); ctx.closePath();
+      ctx.setLineDash([pt(8), pt(4)]); ctx.lineWidth = pt(1.4); ctx.strokeStyle = '#2563ab'; ctx.stroke(); ctx.setLineDash([]);
+      const x0 = Math.min(...sc.pts.map(p => p.x)), y0 = Math.min(...sc.pts.map(p => p.y));
+      ctx.font = `700 ${pt(13)}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'top'; ctx.lineWidth = pt(3); ctx.strokeStyle = '#fff';
+      ctx.strokeText(sc.name, x0 * k + pt(4), y0 * k + pt(4)); ctx.fillStyle = '#2563ab'; ctx.fillText(sc.name, x0 * k + pt(4), y0 * k + pt(4));
+    });
     // 工区
     pg.zones.forEach(z => {
       ctx.beginPath(); z.pts.forEach((p, i) => i ? ctx.lineTo(p.x * k, p.y * k) : ctx.moveTo(p.x * k, p.y * k)); ctx.closePath();
@@ -77,7 +87,7 @@ const PrintPdf = (() => {
 
   /* その図面の部材の表(1ページに入らなければ続きのページ) */
   function tableCanvases(P, pi, A, wPt, hPt) {
-    const pg = P.pages[pi], pxPerPt = DPI / 72, pt = v => v * pxPerPt;
+    const pg = P.pages[pi], pxPerPt = dpiFor(wPt, hPt) / 72, pt = v => v * pxPerPt;
     const zs = [...new Set(pg.zones.map(z => z.name))].sort(natCmp);
     const rows = [];
     P.items.forEach(it => {

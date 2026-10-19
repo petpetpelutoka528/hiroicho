@@ -10,7 +10,7 @@ const TAP_R = 16;                       // タップで印を選ぶ範囲(画面
 const SNAP_R = 14;                      // 線の端・図面の線に吸い付く範囲(画面の px)
 
 let P = null;                           // 開いている案件
-const S = { mode: 'pick', pend: null, zonePts: [], scalePts: [], ortho: false, rev: { list: [], i: 0, filter: 'todo' } };
+const S = { mode: 'pick', pend: null, zonePts: [], scalePts: [], secPts: [], zc: null, zmove: null, ortho: false, rev: { list: [], i: 0, filter: 'todo' } };
 const docs = {};                        // file id → pdf.js の文書 / 画像
 let A = null;                           // 集計(変わったら作り直す)
 
@@ -67,13 +67,19 @@ let saveT = null;
 const hist = [];
 function snap() { return JSON.stringify({ items: P.items, pages: P.pages, threshold: P.threshold, nid: P.nid, files: P.files }); }
 function push() { hist.push(snap()); if (hist.length > 60) hist.shift(); }
-function changed() { stale(); P.updatedAt = Date.now(); clearTimeout(saveT); saveT = setTimeout(saveNow, 400); }
+function changed(selOnly) { stale(); if (!selOnly) P.updatedAt = Date.now(); clearTimeout(saveT); saveT = setTimeout(saveNow, 400); }
 async function saveNow() { clearTimeout(saveT); saveT = null; if (P) try { await Store.putProj(P); } catch (e) { toast('保存できませんでした: ' + e.message, 4000); } }
 function undo() {
   const h = hist.pop(); if (!h) { toast('戻せるものがありません'); return; }
-  const o = JSON.parse(h); Object.assign(P, o); if (P.cur >= P.pages.length) P.cur = 0;
-  S.pend = null; S.zonePts = []; S.scalePts = [];
-  changed(); redraw(); renderItemBar(); toast('元に戻しました');
+  const pid = curPage() && curPage().id;
+  const o = JSON.parse(h); Object.assign(P, o);
+  S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') { S.zc = null; S.mode = 'sec'; } hidePop();
+  let i = P.pages.findIndex(q => q.id === pid);          // 見ていた図面のまま
+  changed();
+  if (i < 0) { i = Math.min(P.cur, P.pages.length - 1); P.cur = -1; if (i >= 0) gotoPage(i, true); }
+  else { P.cur = i; $('pageLbl').textContent = pageName(P, i) + (P.pages.length > 1 ? `(${i + 1}/${P.pages.length})` : ''); renderPgNav(); renderScaleLbl(); redraw(); renderItemBar(); }
+  if (S.mode === 'review') startReview();
+  toast('元に戻しました');
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden && saveT) saveNow(); });
 window.addEventListener('pagehide', () => { if (saveT) saveNow(); });
@@ -216,6 +222,8 @@ async function openProject(id) {
     if (!activeIt() && P.items.length) P.activeItem = P.items[0].id;
     renderItemBar();
     if (P.pages.length) await gotoPage(Math.min(P.cur || 0, P.pages.length - 1), true);
+    else { P.cur = 0; ['baseC', 'detC'].forEach(k => { $(k).width = $(k).height = 0; }); $('ovl').innerHTML = ''; $('pageLbl').textContent = '図面なし'; renderPgNav();
+      setTimeout(() => hint('図面がありません。上の「図面なし」→「＋ 図面を追加」で入れてください', 6000), 400); }
     Store.persist();
     if (!P.items.length) setTimeout(() => hint('まず「部材を選ぶ」から部材を追加してください(Excel からまとめて貼り付けもできます)', 6000), 400);
   } catch (e) { console.error(e); toast(e.message, 4000); renderHome(); }
@@ -233,16 +241,18 @@ async function pageSrc(pg) {
     const fx = d.naturalWidth / W; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(d, x0 * fx, y0 * fx, w * fx, h * fx, 0, 0, w * k, h * k); } };
 }
+let navTok = 0;
 async function gotoPage(i, fit) {
   if (!P.pages[i]) return;
-  const same = P.cur === i && !fit;
-  P.cur = i; S.pend = null; S.zonePts = []; S.scalePts = [];
-  busy(true);
-  try { const src = await pageSrc(P.pages[i]); await Viewer.show(src, same); }
+  const same = P.cur === i && !fit, tok = ++navTok;
+  P.cur = i; S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') { S.zc = null; S.mode = 'sec'; }
+  busy(true); $('pgPrev').disabled = $('pgNext').disabled = true;
+  try { const src = await pageSrc(P.pages[i]); if (tok !== navTok) return; await Viewer.show(src, same); }
   catch (e) { console.error(e); toast('図面を表示できませんでした', 3000); }
-  finally { busy(false); }
+  finally { if (tok === navTok) busy(false); }
+  if (tok !== navTok || !P) return;
   $('pageLbl').textContent = pageName(P, i) + (P.pages.length > 1 ? `(${i + 1}/${P.pages.length})` : '');
-  renderScaleLbl(); redraw(); renderItemBar(); changed();
+  renderPgNav(); renderScaleLbl(); redraw(); renderItemBar(); changed(true);
 }
 function renderScaleLbl() {
   const n = scaleN(curPage()); $('scaleLbl').textContent = n ? '1/' + (Math.round(n * 100) / 100) : '縮尺 未設定';
@@ -257,12 +267,24 @@ function redraw() {
   const k = 1 / Viewer.s;                       // 画面 1px の長さ(u)
   const act = P.activeItem, it0 = activeIt();
   const revCur = S.mode === 'review' ? S.rev.list[S.rev.i] : null;
+  // 伏図の範囲
+  const secOn = S.mode === 'sec' || S.mode === 'zcopy';
+  secsOf(pg).forEach(sc => {
+    const hl = S.zc && (S.zc.src === sc || S.zc.dst === sc);
+    el('polygon', { points: sc.pts.map(p => p.x + ',' + p.y).join(' '), fill: hl ? '#2563ab14' : 'none', stroke: '#2563ab', 'stroke-width': (secOn ? 3 : 1.5) * k, 'stroke-dasharray': `${14 * k} ${6 * k}`, opacity: secOn ? 0.9 : 0.45 }, svg);
+    const b = sc.pts.reduce((a, p) => ({ x: Math.min(a.x, p.x), y: Math.min(a.y, p.y) }), { x: Infinity, y: Infinity });
+    const t = el('text', { x: b.x + 6 * k, y: b.y + 18 * k, 'font-size': 16 * k, 'font-weight': 700, fill: '#2563ab', opacity: secOn ? 1 : 0.6, 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4 * k }, svg);
+    t.textContent = sc.name;
+  });
+  if (S.secPts.length) el('circle', { cx: S.secPts[0].x, cy: S.secPts[0].y, r: 7 * k, fill: 'none', stroke: '#2563ab', 'stroke-width': 3 * k }, svg);
+  if (S.zc && S.zc.a) el('circle', { cx: S.zc.a.x, cy: S.zc.a.y, r: 9 * k, fill: 'none', stroke: '#c94f2c', 'stroke-width': 3 * k }, svg);
   // 工区
   pg.zones.forEach(z => {
     el('polygon', { points: z.pts.map(p => p.x + ',' + p.y).join(' '), fill: z.color + '18', stroke: z.color, 'stroke-width': 2 * k, 'stroke-dasharray': `${8 * k} ${5 * k}` }, svg);
     const c = z.pts.reduce((a, p) => ({ x: a.x + p.x / z.pts.length, y: a.y + p.y / z.pts.length }), { x: 0, y: 0 });
     const t = el('text', { x: c.x, y: c.y, 'font-size': 15 * k, 'font-weight': 700, fill: z.color, 'text-anchor': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3 * k }, svg);
     t.textContent = z.name;
+    if (S.zmove && S.zmove.z === z) z.pts.forEach((v, i) => el('circle', { cx: v.x, cy: v.y, r: (S.zmove.vi === i ? 9 : 6) * k, fill: S.zmove.vi === i ? z.color : '#fff', stroke: z.color, 'stroke-width': 2.5 * k }, svg));
   });
   const faded = o => S.mode !== 'review' && it0 && o.it !== act;
   // 線
@@ -350,18 +372,22 @@ function onTap(p, e) {
   if (!curPage()) return;
   if (S.mode === 'pick') return pickTap(p, e, false);
   if (S.mode === 'zone') return zoneTap(p, e, false);
+  if (S.mode === 'sec') return secTap(p, e, false);
+  if (S.mode === 'zcopy') return zcopyTap(snapPt(p, 'line'));
   if (S.mode === 'scale') return scaleTap(snapPt(p, 'line'));
-  if (S.mode === 'review') { const o = hitMark(p); if (o) { const k = S.rev.list.findIndex(x => x.o === o); if (k >= 0) { S.rev.i = k; showRev(false); } else markPop(o, e); } return; }
+  if (S.mode === 'review') { const o = hitMark(p); if (o) { const k = S.rev.list.findIndex(x => x.o === o); if (k >= 0 && k !== S.rev.i) { S.rev.i = k; showRev(false); } else markPop(o, e); } return; }
   if (S.mode === 'view') { const o = hitMark(p); if (o) markPop(o, e); }
 }
 function onPlace(p, e) {           // 長押しのあと離した所(ルーペで合わせた所)
   if (S.mode === 'pick') return pickTap(p, e, true);
   if (S.mode === 'zone') return zoneTap(p, e, true);
+  if (S.mode === 'sec') return secTap(p, e, true);
+  if (S.mode === 'zcopy') return zcopyTap(p);
   if (S.mode === 'scale') return scaleTap(p);
 }
 function loupePoint(p) {
   if (S.mode === 'zone') return snapPt(p, 'zone');
-  if (S.mode === 'scale') return snapPt(p, 'line');
+  if (S.mode === 'scale' || S.mode === 'zcopy' || S.mode === 'sec') return snapPt(p, 'line');
   const it = activeIt(); if (!it) return p;
   let q = snapPt(p, it.kind === 'pcs' ? 'pcs' : 'line');
   if (S.pend && S.ortho) q = orthoTo(S.pend, q);
@@ -396,6 +422,7 @@ function pickTap(p, e, placed) {
 }
 function zoneTap(p, e, placed) {
   const pg = curPage();
+  if (S.zmove) return zmoveTap(p, placed);
   const q = placed ? p : snapPt(p, 'zone');
   if (S.zonePts.length >= 3 && Math.hypot(q.x - S.zonePts[0].x, q.y - S.zonePts[0].y) * Viewer.s < 22) { closeZone(); return; }
   if (!S.zonePts.length && !placed) {
@@ -460,36 +487,120 @@ function popAt(e, html, actions) {
 function markPop(o, e) {
   const pg = curPage(), it = itemOf(P, o.it);
   popAt(e, `<div class="pt">${esc(markText(o, pg))}${o.rv ? '  ✓見直し済み' : ''}</div>
-    <button data-a="sel">この部材を選ぶ</button>${o.rv ? '' : '<button data-a="ok">見直し OK にする</button>'}${o.x1 !== undefined && pg.zones.length ? '<button data-a="zn">入れる工区を選ぶ</button>' : ''}<button data-a="del" class="warn">この印を消す</button><button data-a="x">閉じる</button>`, {
+    <button data-a="sel">この部材を選ぶ</button><button data-a="chg">部材を変える(仕口ちがいなど)</button>${o.rv ? '' : '<button data-a="ok">見直し OK にする</button>'}${o.x1 !== undefined && pg.zones.length ? '<button data-a="zn">入れる工区を選ぶ</button>' : ''}<button data-a="del" class="warn">この印を消す</button><button data-a="x">閉じる</button>`, {
     zn: () => chooseZone(o, pg),
-    sel: () => { if (it) { P.activeItem = it.id; changed(); renderItemBar(); redraw(); } },
+    chg: () => reassignMark(o, pg),
+    sel: () => { if (it) { P.activeItem = it.id; changed(true); renderItemBar(); redraw(); } },
     ok: () => { push(); o.rv = true; changed(); redraw(); },
     del: () => { push(); removeMark(o); changed(); redraw(); renderItemBar(); toast('消しました'); },
     x: () => {}
   });
 }
 function zonePop(z, e, q) {
-  popAt(e, `<div class="pt">工区「${esc(z.name)}」</div><button data-a="draw">ここから新しい工区を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
+  popAt(e, `<div class="pt">工区「${esc(z.name)}」</div><button data-a="mv">角を動かす</button><button data-a="draw">ここから新しい工区を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
+    mv: () => { S.zmove = { z, vi: null }; redraw(); hint('動かす角をタップ(終わるときは もう一度「工区」)', 4000); },
     draw: () => { S.zonePts = [q]; redraw(); },
     ren: async () => { const v = await askText('工区の名前', '新しい名前', z.name); if (v && v.trim()) { push(); const pg = curPage(), old = z.name; z.name = v.trim();
       if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) l.zn = z.name; });   // 選んであった工区も新しい名前に
       changed(); redraw(); } },
-    del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); pg.zones.splice(pg.zones.indexOf(z), 1); changed(); redraw(); } },
+    del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); pg.zones.splice(pg.zones.indexOf(z), 1);
+      if (!pg.zones.some(q => q.name === z.name)) pg.lens.forEach(l => { if (l.zn === z.name) delete l.zn; });   // 選んであった工区が無くなったら「未定」に戻す
+      changed(); redraw(); } },
     x: () => {}
   });
+}
+
+/* 工区の角を動かす: 角をタップ → 動かす先をタップ */
+function zmoveTap(p, placed) {
+  const m = S.zmove, z = m.z;
+  if (m.vi === null) {
+    let bi = -1, bd = (SNAP_R + 10) / Viewer.s;
+    z.pts.forEach((v, i) => { const d = Math.hypot(v.x - p.x, v.y - p.y); if (d < bd) { bd = d; bi = i; } });
+    if (bi < 0) { hint('角(白い丸)をタップしてください。終わるときは もう一度「工区」', 3000); return; }
+    m.vi = bi; redraw(); hint('動かす先をタップ(長押しで拡大して合わせられます)', 3000); return;
+  }
+  const pg = curPage(), r = SNAP_R / Viewer.s, old = z.pts[m.vi];
+  let q = placed ? p : null;
+  if (!q) { let best = null, bd = r; pg.zones.forEach(zz => zz.pts.forEach(v => { if (v === old) return; const d = Math.hypot(v.x - p.x, v.y - p.y); if (d < bd) { bd = d; best = v; } }));
+    q = best ? { x: best.x, y: best.y } : (Viewer.snapEdge(p.x, p.y, r) || p); }
+  push(); z.pts[m.vi] = { x: q.x, y: q.y }; m.vi = null; changed(); redraw();
+  hint('動かしました。ほかの角も動かせます(終わるときは もう一度「工区」)', 3000);
+}
+
+/* ── 伏図の範囲: 対角の2点をタップ → 名前 ── */
+function secTap(p, e, placed) {
+  const pg = curPage(), q = placed ? p : snapPt(p, 'line');
+  if (!S.secPts.length && !placed) { const sc = secAt(pg, p.x, p.y); if (sc) { secPop(sc, e, q); return; } }
+  S.secPts.push(q); redraw();
+  if (S.secPts.length < 2) { hint('伏図: 範囲の反対の角をタップ', 3000); return; }
+  const [a, b] = S.secPts; S.secPts = []; redraw();
+  if (Math.abs(a.x - b.x) * Viewer.s < 20 || Math.abs(a.y - b.y) * Viewer.s < 20) { hint('範囲が小さすぎます。もう一度、範囲の角をタップ', 3000); return; }
+  addSec(a, b);
+}
+async function addSec(a, b) {
+  const pg = curPage(), have = P.pages.flatMap(q => secsOf(q)).map(s => s.name);
+  let def = '伏図1'; for (let i = 1; i < 200; i++) if (!have.includes('伏図' + i)) { def = '伏図' + i; break; }
+  const nm = await askText('伏図の名前', '例: 2F、3F、RF(工区毎P算出の「数量1」などの見出しになります)', def);
+  if (!nm || !nm.trim()) return;
+  push(); if (!pg.secs) pg.secs = [];
+  const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+  pg.secs.push({ id: nextId(P), name: nm.trim(), pts: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }] });
+  changed(); redraw(); toast('伏図「' + nm.trim() + '」を追加しました');
+}
+function zonesIn(sc, pg) { return pg.zones.filter(z => { const c = polyC(z.pts); return pip(sc.pts, c.x, c.y); }); }
+function secPop(sc, e, q) {
+  const pg = curPage(), nz = zonesIn(sc, pg).length;
+  popAt(e, `<div class="pt">伏図「${esc(sc.name)}」 工区 ${nz}</div>${nz && secsOf(pg).length > 1 ? '<button data-a="cp">この工区をほかの伏図に写す</button>' : ''}<button data-a="draw">ここから新しい範囲を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
+    cp: () => startZcopy(sc),
+    draw: () => { S.secPts = [q]; redraw(); hint('伏図: 範囲の反対の角をタップ', 3000); },
+    ren: async () => { const v = await askText('伏図の名前', '新しい名前', sc.name); if (v && v.trim()) { push(); sc.name = v.trim(); changed(); redraw(); } },
+    del: async () => { if (await confirmDlg('伏図の範囲を消す', '伏図「' + sc.name + '」の範囲を消します(中の工区と拾った印は残ります)。', '消す', 'warn')) { push(); pg.secs.splice(pg.secs.indexOf(sc), 1); changed(); redraw(); } },
+    x: () => {}
+  });
+}
+/* 工区を写す: 写す先を選ぶ → 写す元で基準点 → 写す先で同じ点 */
+async function startZcopy(src) {
+  const pg = curPage(), others = secsOf(pg).filter(s => s !== src);
+  const dst = others.length === 1 ? others[0] : await dialog('どの伏図に写しますか', '<p>「' + esc(src.name) + '」の工区 ' + zonesIn(src, pg).length + '個を写します。</p>',
+    [...others.map(s => ({ label: s.name, value: s })), { label: 'やめる', value: null }]);
+  if (!dst || dst === true) return;
+  S.mode = 'zcopy'; S.zc = { src, dst, a: null }; redraw();
+  hint('写す元「' + src.name + '」で、基準にする点(通り芯の交点など)をタップ', 6000);
+}
+async function zcopyTap(p) {
+  const zc = S.zc, pg = curPage(); if (!zc) return;
+  if (!zc.a) {
+    if (!pip(zc.src.pts, p.x, p.y)) { hint('写す元「' + zc.src.name + '」の中をタップしてください', 3000); return; }
+    zc.a = p; redraw(); hint('写す先「' + zc.dst.name + '」で、同じ点をタップ', 6000); return;
+  }
+  if (!pip(zc.dst.pts, p.x, p.y)) { hint('写す先「' + zc.dst.name + '」の中をタップしてください', 3000); return; }
+  const dx = p.x - zc.a.x, dy = p.y - zc.a.y, from = zonesIn(zc.src, pg), old = zonesIn(zc.dst, pg);
+  let replace = false;
+  if (old.length) {
+    const r = await dialog('写す先にも工区があります', '<p>「' + esc(zc.dst.name) + '」にはもう工区が ' + old.length + '個あります。</p>',
+      [{ label: '消して写す', cls: 'warn', value: 'rep' }, { label: '足して写す', value: 'add' }, { label: 'やめる', value: null }]);
+    if (!r || r === true) { S.zc = null; setMode('sec'); return; }
+    replace = r === 'rep';
+  }
+  push();
+  if (replace) pg.zones = pg.zones.filter(z => !old.includes(z));
+  from.forEach(z => pg.zones.push({ id: nextId(P), name: z.name, color: z.color, pts: z.pts.map(v => ({ x: v.x + dx, y: v.y + dy })) }));
+  changed(); const dn = zc.dst.name; S.zc = null; setMode('sec');
+  toast('「' + dn + '」に工区を ' + from.length + '個写しました。違う所は「工区」で角を動かすか、消して描き直してください', 6000);
 }
 
 /* ── モード ── */
 const MODE_HINT = {
   pick: '拾い: 個はタップ、m・部材は始点と終点をタップ。長押しで拡大して合わせる',
-  zone: '工区: 角を順にタップ。最初の点をタップで閉じる',
+  zone: '工区: 角を順にタップ。最初の点をタップで閉じる。工区をタップで角を動かす・名前・消す',
+  sec: '伏図: 1枚に 2F・3F… と並んでいるとき、範囲の対角の2点をタップして名前を付ける。範囲をタップで「工区をほかの伏図に写す」',
   scale: '縮尺: 寸法の分かっている2点をタップ(通り芯など)',
   review: '見直し: 印を1つずつ見て「OK」。全部 OK になれば見落としなし',
   view: '移動: 図面を見るだけ(タップしても拾わない)'
 };
 function setMode(m) {
   if (S.mode === m && m === 'pick' && S.pend) { S.pend = null; redraw(); hint('描きかけをやめました', 1500); return; }
-  S.mode = m; S.pend = null; S.zonePts = []; S.scalePts = [];
+  S.mode = m; S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zc = null; S.zmove = null;
   document.querySelectorAll('#modes button[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('revBar').classList.toggle('hidden', m !== 'review');
   $('itemBar').classList.toggle('hidden', m === 'review');
@@ -557,7 +668,7 @@ function renderItemBar() {
   $('itDot').style.background = it ? it.color : 'var(--rule2)';
   $('itName').textContent = it ? it.name : '部材を選ぶ';
   if (it) {
-    const a = agg(), T = a.T[it.id], PGc = a.PG[it.id][P.cur];
+    const a = agg(), T = a.T[it.id], PGc = a.PG[it.id][P.cur] || blank();
     const q = c => it.kind === 'm' ? (c.mm / 1000).toFixed(1) + 'm' : c.n + KIND[it.kind].unit;
     $('itCnt').textContent = KIND[it.kind].lbl + '  この図面 ' + q(PGc) + ' / 全部 ' + q(T);
   } else $('itCnt').textContent = '';
@@ -565,7 +676,7 @@ function renderItemBar() {
 function stepItem(d) {
   if (!P.items.length) return openItemSheet();
   let i = P.items.findIndex(x => x.id === P.activeItem); i = i < 0 ? 0 : (i + d + P.items.length) % P.items.length;
-  P.activeItem = P.items[i].id; S.pend = null; changed(); renderItemBar(); redraw();
+  P.activeItem = P.items[i].id; S.pend = null; changed(true); renderItemBar(); redraw();
 }
 $('itPrev').onclick = () => stepItem(-1);
 $('itNext').onclick = () => stepItem(1);
@@ -585,16 +696,17 @@ $('sheetBg').onclick = closeSheet; $('bsClose').onclick = closeSheet;
 function openItemSheet() {
   openSheet('部材を選ぶ', q => {
     const a = agg(), ql = q.toLowerCase();
-    const rows = P.items.filter(it => !q || it.name.toLowerCase().includes(ql)).map(it => {
-      const T = a.T[it.id], c = a.PG[it.id][P.cur];
+    const list = P.items.filter(it => !q || it.name.toLowerCase().includes(ql));
+    const rows = list.map((it, k) => {
+      const T = a.T[it.id], c = a.PG[it.id][P.cur] || blank();
       const qq = x => it.kind === 'm' ? (x.mm / 1000).toFixed(1) : String(x.n);
-      return `<div class="row${it.id === P.activeItem ? ' cur' : ''}" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i>
+      return grpHead(it, list[k - 1]) + `<div class="row${it.id === P.activeItem ? ' cur' : ''}" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i>
         <span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
         <span class="v">${qq(c)} <small>全部 ${qq(T)}${KIND[it.kind].unit}</small></span></div>`;
     }).join('');
     $('bsBody').innerHTML = `<div class="list">${rows || '<div class="empty">' + (P.items.length ? '見つかりません' : 'まだ部材がありません') + '</div>'}</div>
       <div class="add"><button id="bsAdd">＋ 部材を追加</button><button id="bsEdit">部材の編集・貼り付け</button></div>`;
-    $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; S.pend = null; changed(); renderItemBar(); redraw(); closeSheet(); if (S.mode !== 'pick') setMode('pick'); });
+    $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; S.pend = null; changed(true); renderItemBar(); redraw(); closeSheet(); if (S.mode !== 'pick') setMode('pick'); });
     $('bsAdd').onclick = async () => { closeSheet(); const it = await editItem(null); if (it) { P.activeItem = it.id; renderItemBar(); redraw(); } };
     $('bsEdit').onclick = () => { closeSheet(); openItems('draw'); };
   }, true);
@@ -611,12 +723,13 @@ function openPageSheet() {
       <div class="add"><button id="bsDelPg" style="color:var(--warn)">この図面を消す</button></div>`;
     $('bsDelPg').onclick = async () => {
       closeSheet(); const pg = curPage(), n = pg.dots.length + pg.lens.length;
+      if (P.pages.length <= 1) { await dialog('図面を消す', '<p>最後の1枚は消せません。図面を差し替えるときは、先に「＋ 図面を追加」で新しい図面を入れてから、古い図面を消してください。</p>', [{ label: 'OK', cls: 'pri', value: true }]); return; }
       if (!(await confirmDlg('図面を消す', '「' + pageName(P, P.cur) + '」を案件から消します。' + (n ? 'この図面で拾った印 ' + n + '件も消えます。' : ''), '消す', 'warn'))) return;
       P.pages.splice(P.cur, 1);
       if (!P.pages.some(q => q.file === pg.file)) { P.files = P.files.filter(f => f.id !== pg.file); Store.delFile(P.id, pg.file); delete docs[pg.file]; }
       hist.length = 0; changed(); await saveNow();
-      if (!P.pages.length) { P = null; renderHome(); return; }
-      gotoPage(Math.min(P.cur, P.pages.length - 1), true);
+      const ni = Math.min(P.cur, P.pages.length - 1); P.cur = -1; await gotoPage(ni, true);
+      if (S.mode === 'review') startReview();
     };
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); gotoPage(+r.dataset.i, true); });
     $('bsAddPdf').onclick = () => { closeSheet(); filesFor = 'add'; $('fFiles').value = ''; $('fFiles').click(); };
@@ -624,6 +737,16 @@ function openPageSheet() {
   }, false);
 }
 $('btnPage').onclick = openPageSheet;
+function renderPgNav() {
+  const many = P.pages.length > 1;
+  $('pgPrev').classList.toggle('hidden', !many); $('pgNext').classList.toggle('hidden', !many);
+  $('pgPrev').disabled = P.cur <= 0; $('pgNext').disabled = P.cur >= P.pages.length - 1;
+}
+function stepPage(d) { const i = P.cur + d; if (i < 0 || i >= P.pages.length) return; hidePop(); gotoPage(i, true); }
+$('pgPrev').onclick = () => stepPage(-1);
+$('pgNext').onclick = () => stepPage(1);
+/* 区切り(標準の部材の「G梁」など)の見出し */
+function grpHead(it, prev) { return it.grp && (!prev || prev.grp !== it.grp) ? `<div class="gh">${esc(it.grp)}</div>` : ''; }
 $('btnScale').onclick = async () => {
   const n = scaleN(curPage());
   const r = await dialog('縮尺', `<label>縮尺 1/○ の ○</label><input id="dIn" type="number" inputmode="decimal" value="${n ? Math.round(n * 100) / 100 : ''}" placeholder="100">
@@ -636,7 +759,7 @@ $('btnUndo').onclick = undo;
 $('btnBack').onclick = async () => { await saveNow(); P = null; renderHome(); };
 
 /* ═════════ 台帳 ═════════ */
-let ledTab = 'items';
+let ledTab = 'items', zMode = 'sl';
 $('btnLedger').onclick = () => { show('ledger'); renderLedger(); };
 $('btnLedgerBack').onclick = () => { show('draw'); renderItemBar(); redraw(); };
 document.querySelectorAll('#ledSeg button').forEach(b => b.onclick = () => { ledTab = b.dataset.tab; renderLedger(); });
@@ -647,17 +770,31 @@ function renderLedger() {
     <div class="kpi hd"><small>手付</small><b>${t.hd}</b></div><div class="kpi"><small>t</small><b>${(t.kg / 1000).toFixed(2)}</b></div>
     <div class="kpi"><small>見直し</small><b>${t.n ? Math.round(t.rv / t.n * 100) : 0}%</b></div></div>`;
   if (ledTab === 'items') {
-    body.innerHTML = kpi + '<div class="list">' + (P.items.map(it => {
+    body.innerHTML = kpi + '<div class="list">' + (P.items.map((it, k) => {
       const T = a.T[it.id];
       const q = it.kind === 'm' ? (T.mm / 1000).toFixed(2) + ' m' : T.n + ' ' + KIND[it.kind].unit;
       const sub = it.kind === 'mem' ? `${(T.mm / 1000).toFixed(2)}m ・ 吊${T.sl} 手付${T.hd} ・ ${n0(T.kg)}kg` : (T.kg ? n0(T.kg) + 'kg' : '');
-      return `<div class="row" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
+      return grpHead(it, P.items[k - 1]) + `<div class="row" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
         <span class="v">${q}<small>${sub}</small><small class="ck${T.n && T.rv < T.n ? ' todo' : ''}">${T.n ? '見直し ' + T.rv + '/' + T.n : '拾いなし'}</small></span></div>`;
     }).join('') || '<div class="empty">部材がありません。右上の「部材の編集」から追加してください。</div>') + '</div>';
-    body.querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; changed(); show('draw'); setMode('pick'); renderItemBar(); });
+    body.querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; changed(true); show('draw'); setMode('pick'); renderItemBar(); });
   } else if (ledTab === 'zones') {
     const zs = a.cols.filter(c => c !== '__none'), cols = zs.length ? [...zs, '__none'] : [];
-    let h = '<div class="tblWrap"><table class="mx"><tr><th>部材</th>' + zs.map(z => `<th>${esc(z)}</th>`).join('') + (zs.length ? '<th>未割当</th>' : '') + '<th>計</th><th>長さm</th><th>kg</th></tr>';
+    // 工区毎P算出(伏図 × 工区 × 柱/G/B/他)
+    const Z = zoneTable(P, a, zMode), fz = v => !v ? '' : zMode === 'len' ? v.toFixed(1) : String(v);
+    let h = '<div class="sec"><h3>工区毎P算出</h3><div class="seg mini" id="zmSeg">' + Object.keys(ZMODE).map(m => `<button data-m="${m}" class="${m === zMode ? 'on' : ''}">${ZMODE[m]}</button>`).join('') + '</div></div>';
+    if (!Z.zones.length) h += '<p class="note">工区がまだありません。図面の「工区」で範囲を囲むと、ここに工区ごとの数が出ます。1枚に 2F・3F… と並んでいるときは、先に「伏図」で範囲を分けてください。</p>';
+    else {
+      h += '<div class="tblWrap"><table class="mx zt"><tr><th></th>' + Z.blocks.map(b => `<th colspan="5" class="bh">${esc(b)}</th>`).join('') + '<th></th></tr><tr><th>工区</th>' +
+        Z.blocks.map(() => ZCATS.map(c => `<th>${c}</th>`).join('') + '<th class="sub">小計</th>').join('') + '<th>合計</th></tr>';
+      const colT = {}; let all = 0;
+      Z.zones.forEach(z => { let rt = 0;
+        h += `<tr><td>${z === '' ? '(工区外)' : esc(z)}</td>` + Z.blocks.map(b => { let st = 0;
+          const cs = ZCATS.map(c => { const v = Z.get(b, z, c); st += v; colT[b + c] = (colT[b + c] || 0) + v; return `<td>${fz(v)}</td>`; }).join('');
+          rt += st; colT[b] = (colT[b] || 0) + st; return cs + `<td class="sub">${fz(st)}</td>`; }).join('') + `<td><b>${fz(rt)}</b></td></tr>`; all += rt; });
+      h += '<tr class="foot"><td>計</td>' + Z.blocks.map(b => ZCATS.map(c => `<td>${fz(colT[b + c])}</td>`).join('') + `<td class="sub">${fz(colT[b])}</td>`).join('') + `<td>${fz(all)}</td></tr></table></div>`;
+    }
+    h += '<div class="sec"><h3>部材 × 工区(全部の伏図の合計)</h3></div><div class="tblWrap"><table class="mx"><tr><th>部材</th>' + zs.map(z => `<th>${esc(z)}</th>`).join('') + (zs.length ? '<th>未割当</th>' : '') + '<th>計</th><th>長さm</th><th>kg</th></tr>';
     P.items.forEach(it => { const T = a.T[it.id];
       h += `<tr><td>${esc(it.name)}</td>` + cols.map(c => `<td>${qtyTxt(it, a.M[it.id][c])}</td>`).join('') +
         `<td><b>${qtyTxt(it, T)}</b></td><td>${it.kind === 'mem' && T.mm ? (T.mm / 1000).toFixed(2) : ''}</td><td>${T.kg ? n0(T.kg) : ''}</td></tr>`; });
@@ -665,6 +802,7 @@ function renderLedger() {
     h += '<div class="sec"><h3>図面ごとの数</h3></div><div class="tblWrap"><table class="mx"><tr><th>部材</th>' + P.pages.map((pg, i) => `<th>${esc(pageName(P, i))}</th>`).join('') + '<th>計</th></tr>';
     P.items.forEach(it => { h += `<tr><td>${esc(it.name)}</td>` + P.pages.map((pg, i) => `<td>${qtyTxt(it, a.PG[it.id][i])}</td>`).join('') + `<td><b>${qtyTxt(it, a.T[it.id])}</b></td></tr>`; });
     body.innerHTML = kpi + h + '</table></div>';
+    body.querySelectorAll('#zmSeg button').forEach(b => b.onclick = () => { zMode = b.dataset.m; renderLedger(); });
   } else if (ledTab === 'check') {
     const iss = issues(P, a);
     let h = kpi + '<div class="issues"><h3>気になる点</h3><ul>' + (iss.length ? iss.map(s => `<li>${esc(s)}</li>`).join('') : '<li>気になる点はありません</li>') + '</ul>';
@@ -693,18 +831,60 @@ function renderLedger() {
 let itemsBack = 'draw';
 function openItems(back) { itemsBack = back || 'draw'; show('items'); $('thIn').value = P.threshold; renderItems(); }
 $('btnItems').onclick = () => openItems('ledger');
-$('btnItemsBack').onclick = () => { show(itemsBack); if (itemsBack === 'ledger') renderLedger(); else { renderItemBar(); redraw(); } };
+$('btnItemsBack').onclick = () => { show(itemsBack); if (itemsBack === 'ledger') renderLedger(); else { renderItemBar(); redraw(); if (S.mode === 'review') startReview(); } };
 $('thIn').onchange = () => { const v = parseFloat($('thIn').value); if (v >= 0) { push(); P.threshold = v; changed(); } };
 function renderItems() {
   const a = agg();
   $('itemsBody').innerHTML = '<div class="list">' + (P.items.map((it, i) => {
     const T = a.T[it.id];
-    return `<div class="row" data-id="${it.id}"><span class="k" style="width:22px">${i + 1}</span><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span>
+    return grpHead(it, P.items[i - 1]) + `<div class="row" data-id="${it.id}"><span class="k" style="width:22px">${i + 1}</span><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span>
       <span class="k">${KIND[it.kind].lbl}</span><span class="v">${it.w ? it.w + ' ' + KIND[it.kind].wLbl : (it.kind === 'mem' ? '<span style="color:var(--warn)">単重なし</span>' : '')}
       <small>${it.bolt ? 'ボルト ' + it.bolt + ' ・ ' : ''}${catOf(it)}${T.n ? ' ・ 拾い ' + T.n : ''}</small></span></div>`;
-  }).join('') || '<div class="empty">部材がありません。右上の「＋」で1つずつ、「貼り付け」で Excel からまとめて追加できます。</div>') + '</div>';
+  }).join('') || '<div class="empty">部材がありません。右上の「標準の部材」でいつもの部材をまとめて、「＋」で1つずつ、「貼り付け」で Excel から追加できます。</div>') + '</div>';
   $('itemsBody').querySelectorAll('.row').forEach(r => r.onclick = () => editItem(itemOf(P, +r.dataset.id)).then(renderItems));
 }
+/* 部材分割: 仕口ちがい(G24rr など)の部材を作る。単重・種類はそのまま、ボルトだけ変える */
+const JOINTS = [['rr', 'ラーメン(両側)'], ['rp', 'ラーメン+ピン'], ['r', '片側ラーメン・片側なし'], ['p', '片側ピン・片側なし']];
+async function splitItem(it) {
+  const base = it.base || it.name, src = P.items.find(x => x.name === base) || it;
+  const have = new Set(P.items.map(x => x.name));
+  const row = (i, sfx, lbl) => `<div class="jrow"><input type="checkbox" id="jc${i}"${have.has(base + sfx) ? ' disabled' : ''}><label for="jc${i}"><b>${esc(base)}${esc(sfx)}</b><small>${esc(lbl)}${have.has(base + sfx) ? '(もうあります)' : ''}</small></label>
+    <span>ボルト<input id="jb${i}" type="number" inputmode="decimal" value="${src.bolt || ''}"></span></div>`;
+  const r = await dialog('部材を分割(仕口ちがい)', `<p style="font-size:13px;color:var(--ink2)">「${esc(base)}」をもとに、仕口ちがいの部材を作ります。単重・種類は同じで、ボルトだけ変えられます。</p>` +
+    JOINTS.map(([sfx, lbl], i) => row(i, sfx, lbl)).join('') +
+    `<div class="jrow"><input type="checkbox" id="jc9"><label for="jc9"><b>${esc(base)}+</b><small>その他(付け足す文字)</small><input id="jx" class="jx" placeholder="例: pp"></label><span>ボルト<input id="jb9" type="number" inputmode="decimal" value="${src.bolt || ''}"></span></div>`,
+    [{ label: 'やめる', value: null }, { label: '作る', cls: 'pri', read: () => {
+      const out = [];
+      JOINTS.forEach(([sfx], i) => { if ($('jc' + i).checked) out.push({ sfx, bolt: parseFloat($('jb' + i).value) || 0 }); });
+      const x = $('jx').value.trim(); if ($('jc9').checked || x) { if (!x) { toast('その他の付け足す文字を入れてください'); return false; } out.push({ sfx: x, bolt: parseFloat($('jb9').value) || 0 }); }
+      if (!out.length) { toast('作るものにチェックを入れてください'); return false; }
+      return out; } }]);
+  if (!r || r === true) return null;
+  push();
+  let at = P.items.indexOf(src); while (at + 1 < P.items.length && P.items[at + 1].base === base) at++;
+  const made = [];
+  r.forEach(({ sfx, bolt }) => { const name = base + sfx; if (have.has(name)) return;
+    const ni = { id: nextId(P), name, kind: src.kind, w: src.w, bolt, cat: src.cat || '', base, color: genColor(P.nid + 5) };
+    if (src.grp) ni.grp = src.grp;
+    P.items.splice(++at, 0, ni); made.push(name); have.add(name); });
+  changed(); toast(made.length ? made.join('・') + ' を作りました' : '同じ名前がもうあります');
+  return null;
+}
+/* 拾った印の部材を変える(G24 → G24rr など) */
+function reassignMark(o, pg) {
+  const cur = itemOf(P, o.it), isDot = o.x1 === undefined, base = cur ? (cur.base || cur.name) : '';
+  const ok = it => isDot ? it.kind === 'pcs' : it.kind !== 'pcs';
+  openSheet('部材を変える', q => {
+    const ql = q.toLowerCase(), list = P.items.filter(it => ok(it) && (!q || it.name.toLowerCase().includes(ql)));
+    const sib = list.filter(it => (it.base || it.name) === base), rest = list.filter(it => !sib.includes(it));
+    const rowH = it => `<div class="row${cur && it.id === cur.id ? ' cur' : ''}" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span><span class="v">${it.bolt ? 'ボルト ' + it.bolt : ''}</span></div>`;
+    $('bsBody').innerHTML = '<div class="list">' + (sib.length > 1 ? '<div class="gh">仕口ちがい</div>' + sib.map(rowH).join('') + '<div class="gh">ほかの部材</div>' : '') +
+      (sib.length > 1 ? rest : list).map(rowH).join('') + '</div>';
+    $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); const id = +r.dataset.id; if (cur && id === cur.id) return;
+      push(); o.it = id; changed(); redraw(); renderItemBar(); if (S.mode === 'review') showRev(); toast('「' + itemOf(P, id).name + '」に変えました'); });
+  }, true);
+}
+function markCount(it) { return P.pages.reduce((s, pg) => s + pg.dots.filter(d => d.it === it.id).length + pg.lens.filter(l => l.it === it.id).length, 0); }
 async function editItem(it, fromBar) {
   const isNew = !it, v = it || { name: '', kind: 'mem', w: '', bolt: '', cat: '', color: genColor(P.items.length + 1) };
   const r = await dialog(isNew ? '部材を追加' : '部材を直す', `
@@ -715,13 +895,15 @@ async function editItem(it, fromBar) {
     <div><label>柱/G/B/他</label><select id="eC"><option value="">名前から(G→G、B→B)</option>${CATS.map(c => `<option${v.cat === c ? ' selected' : ''}>${c}</option>`).join('')}</select></div></div>
     <label>色</label><input id="eCol" type="color" value="${v.color}" style="height:44px;padding:2px">
     <p style="font-size:12.5px;color:var(--ink2);margin-top:8px">個: タップ1回で数える / m: 2点で長さ / 部材: 2点で長さ→重量→吊・手付</p>`,
-    [...(isNew ? [] : [{ label: '消す', cls: 'warn', value: 'del' }]), ...(fromBar ? [{ label: '一覧・貼り付け', value: 'list' }] : []), { label: 'やめる', value: null },
+    [...(isNew ? [] : [{ label: '消す', cls: 'warn', value: 'del' }, { label: '分割(仕口)', value: 'split' }]), ...(fromBar ? [{ label: '一覧・貼り付け', value: 'list' }] : []), { label: 'やめる', value: null },
      { label: 'OK', cls: 'pri', read: () => { const nm = $('eNm').value.trim(); if (!nm) { toast('部材名を入れてください'); return false; }
+        if (!isNew && (it.kind === 'pcs') !== ($('eKd').value === 'pcs') && markCount(it)) { toast('この部材はもう拾ってあるので、「個」と「m・部材」は切り替えられません(点と線がちがうため)', 4500); return false; }
         return { name: nm, kind: $('eKd').value, w: parseFloat($('eW').value) || 0, bolt: parseFloat($('eB').value) || 0, cat: $('eC').value, color: $('eCol').value }; } }]);
   if (!r) return null;
   if (r === 'list') { openItems('draw'); return null; }
+  if (r === 'split') return splitItem(it);
   if (r === 'del') {
-    const n = P.pages.reduce((s, pg) => s + pg.dots.filter(d => d.it === it.id).length + pg.lens.filter(l => l.it === it.id).length, 0);
+    const n = markCount(it);
     if (n && !(await confirmDlg('部材を消す', '「' + it.name + '」で拾った印 ' + n + '件も一緒に消えます。', '消す', 'warn'))) return null;
     push();
     P.items.splice(P.items.indexOf(it), 1);
@@ -734,6 +916,18 @@ async function editItem(it, fromBar) {
   Object.assign(it, r); changed(); return it;
 }
 $('btnAddItem').onclick = () => editItem(null).then(renderItems);
+$('btnPreset').onclick = async () => {
+  const have = new Set(P.items.map(it => it.name));
+  const add = PRESET_ITEMS.filter(r => !have.has(r[1]));
+  if (!add.length) { toast('標準の部材はもう全部入っています'); return; }
+  const grps = [...new Set(add.map(r => r[0]))].join('・');
+  if (!(await confirmDlg('標準の部材を入れる', `${grps} の ${add.length}件を「部材」として入れます(ボルト数と、分かっている単重つき)。` +
+      (PRESET_ITEMS.length - add.length ? `同じ名前がすでにある ${PRESET_ITEMS.length - add.length}件は入れません。` : '') + '\n単重のないものは、あとで部材をタップして入れてください。', '入れる'))) return;
+  push();
+  add.forEach(([grp, name, w, bolt]) => P.items.push({ id: nextId(P), name, kind: 'mem', w: w || 0, bolt: bolt || 0, cat: '', grp, color: genColor(P.items.length + 1) }));
+  if (!P.activeItem && P.items.length) P.activeItem = P.items[0].id;
+  changed(); renderItems(); toast(add.length + '件の部材を入れました');
+};
 $('btnPaste').onclick = async () => {
   const txt = await dialog('Excel から貼り付け', `<p>Excel で「部材名・種類・単重・ボルト・柱/G/B/他」の順の列をコピーして、下に貼り付けてください(種類・単重などは無くてもかまいません)。</p>
     <textarea id="eTx" placeholder="G1&#9;部材&#9;60&#9;4&#10;B1&#9;部材&#9;30&#10;EV&#9;個&#9;50"></textarea>`,
@@ -756,13 +950,13 @@ $('btnPaste').onclick = async () => {
 /* ═════════ 図面の操作をつなぐ ═════════ */
 Viewer.init({ view: $('view'), sheet: $('sheet'), baseC: $('baseC'), detC: $('detC'), svg: $('ovl'), loupe: $('loupe'), loupeC: $('loupeC') }, {
   tap: onTap, place: onPlace,
-  wantsLoupe: () => ['pick', 'zone', 'scale'].includes(S.mode),
+  wantsLoupe: () => ['pick', 'zone', 'scale', 'sec', 'zcopy'].includes(S.mode),
   loupePoint, zoomed: () => redraw()
 });
 document.addEventListener('keydown', e => {
   if (!P || $('draw').classList.contains('hidden')) return;
   if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
-  if (e.key === 'Escape') { S.pend = null; S.zonePts = []; S.scalePts = []; hidePop(); redraw(); }
+  if (e.key === 'Escape') { S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') setMode('sec'); hidePop(); redraw(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   else if (e.key === 'ArrowRight' && S.mode !== 'review') stepItem(1);
   else if (e.key === 'ArrowLeft' && S.mode !== 'review') stepItem(-1);
