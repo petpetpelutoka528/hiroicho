@@ -2,6 +2,27 @@
 /* ═══════════════════════════════════════════════════════════
    拾い帳(スマホ・PC 共通) — 画面と操作
 ═══════════════════════════════════════════════════════════ */
+/* ── 安全装置: 動かなくなったら理由を出して「読み込み直す」ボタン(データは消さない) ── */
+(function guard() {
+  const fix = async () => {
+    try { const rs = navigator.serviceWorker ? await navigator.serviceWorker.getRegistrations() : []; for (const r of rs) await r.unregister(); } catch (e) {}
+    try { for (const k of await caches.keys()) await caches.delete(k); } catch (e) {}
+    location.reload();
+  };
+  const box = msg => {
+    if (document.getElementById('fatal')) return;
+    const d = document.createElement('div'); d.id = 'fatal';
+    d.style.cssText = 'position:fixed;left:10px;right:10px;top:calc(10px + env(safe-area-inset-top));z-index:9999;background:#b0451c;color:#fff;padding:12px 14px;border-radius:12px;font:14px/1.5 -apple-system,"Hiragino Sans",sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.3)';
+    d.innerHTML = '<b>アプリがうまく動いていません</b><br><span></span><br><button style="margin-top:8px;background:#fff;color:#b0451c;border:0;border-radius:8px;padding:9px 14px;font-weight:700;font-size:15px">読み込み直す(データは消えません)</button> <button style="margin-top:8px;background:none;color:#fff;border:1px solid #fff;border-radius:8px;padding:8px 12px">閉じる</button>';
+    d.querySelector('span').textContent = msg;
+    const [b1, b2] = d.querySelectorAll('button'); b1.onclick = fix; b2.onclick = () => d.remove();
+    (document.body || document.documentElement).appendChild(d);
+  };
+  window.addEventListener('error', e => box('エラー: ' + (e.message || '不明')));
+  window.addEventListener('unhandledrejection', e => { const r = e.reason; if (r && r.name === 'AbortError') return; box('エラー: ' + ((r && r.message) || r)); });
+  const miss = ['pgPrev', 'pgNext', 'btnPreset', 'btnModeItems', 'topChips', 'bsSearch'].filter(id => !document.getElementById(id));
+  if (miss.length) { box('更新が途中で、古い部品と新しい部品がまざっています(GitHub のファイルが全部そろっているか確認してください)。'); throw new Error('部品がそろっていません: ' + miss.join(',')); }
+})();
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'pdf.worker.min.js';
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
