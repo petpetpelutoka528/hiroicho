@@ -125,12 +125,21 @@ const Excel = (() => {
       [[1, '吊材積算', 'sl'], [10, '手付積算', 'hd']].forEach(([c0, ttl, key]) => {
         [10, 6, 6, 6, 6, 6, 7, 9].forEach((w, i) => ws.getColumn(c0 + i).width = w);
         title(ws, 1, c0, c0 + 7, ttl);
-        ['部材名', '2F', '3F', '4F', '5F', 'ボルト', '合計数', 'ボルト数量'].forEach((h, i) => {
+        // 2F〜5F の4列: 書き出す図面・伏図が4つまでなら、その名前で列ごとに。5つ以上なら1列目に合計
+        const Z = zoneTable(P, A, key), per = Z.blocks.length > 0 && Z.blocks.length <= 4;
+        const heads = per ? [...Z.blocks, '', '', '', ''].slice(0, 4) : ['合計', '', '', ''];
+        ['部材名', ...heads, 'ボルト', '合計数', 'ボルト数量'].forEach((h, i) => {
           const x = ws.getCell(3, c0 + i); x.value = h; x.font = f9(); x.alignment = { horizontal: i ? 'right' : 'left' }; x.border = { bottom: DOT }; });
         const L = k => ws.getColumn(c0 + k).letter;
         let r = P0;
+        const jj = key === 'sl' ? '吊' : '手付';
         P.items.forEach(it => { if (it.kind !== 'mem') return; const n = A.T[it.id][key]; if (!n) return;
-          ws.getCell(r, c0).value = it.name; ws.getCell(r, c0 + 1).value = n; if (it.bolt) ws.getCell(r, c0 + 5).value = it.bolt; r++; });
+          ws.getCell(r, c0).value = it.name;
+          if (per) { const blk = {}; let inB = 0; A.rows.forEach(rw => { if (rw.it === it && rw.j === jj && rw.blk) { blk[rw.blk] = (blk[rw.blk] || 0) + 1; inB++; } });
+            Z.blocks.forEach((b, k) => { if (blk[b]) ws.getCell(r, c0 + 1 + k).value = blk[b]; });
+            if (inB < n) ws.getCell(r, c0 + 1).value = (ws.getCell(r, c0 + 1).value || 0) + (n - inB); }   // 念のため: どこにも入らない分は1列目へ
+          else ws.getCell(r, c0 + 1).value = n;
+          if (it.bolt) ws.getCell(r, c0 + 5).value = it.bolt; r++; });
         for (let rr = P0; rr < P0 + NROW; rr++) {
           ws.getCell(rr, c0 + 6).value = { formula: `IF(${L(0)}${rr}="","",SUM(${L(1)}${rr}:${L(4)}${rr}))` };
           ws.getCell(rr, c0 + 7).value = { formula: `IF(${L(0)}${rr}="","",${L(6)}${rr}*N(${L(5)}${rr}))` };

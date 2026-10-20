@@ -26,6 +26,7 @@ const Viewer = (() => {
   };
 
   /* src: { w, h(u), render(ctx, k, x0, y0, w, h) → Promise } */
+  V.clear = () => { V.src = null; };
   V.show = async (src, keepView) => {
     const seq = ++renderSeq;
     V.src = src; V.W = src.w; V.H = src.h;

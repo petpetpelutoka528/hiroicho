@@ -175,6 +175,8 @@ function issues(P, A) {
   const dup = dupMarks(P); if (dup.length) out.push('同じ部材がほぼ同じ場所に2回拾われている  ' + dup.length + '件(見直しで確認)');
   const outSec = A.rows.filter(r => !r.blk && P.pages[r.pi].zp && secsOf(P.pages[r.pi]).length && r.it.kind === 'mem').length;
   if (outSec) out.push('工区毎P算出に入れる図面で、伏図の範囲の外にある部材  ' + outSec + '件(工区毎P算出には入りません)');
+  if (P.dropped) out.push('書き出しでは、伏図の範囲の外の拾い ' + P.dropped + '件を入れていません');
+  if (P.skipped) out.push('書き出しに入れていない図面 ' + P.skipped + '枚');
   const t = totals(P, A); if (t.n && t.rv < t.n) out.push('見直しがまだの印  ' + (t.n - t.rv) + '件 / ' + t.n + '件');
   return out;
 }

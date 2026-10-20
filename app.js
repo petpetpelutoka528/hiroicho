@@ -62,11 +62,13 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-async function shareFile(blob, name) {
+const APP_VER = 'v14';
+/* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
+   どちらを使うかは、押したボタンで決める(自動では切り替えない) */
+async function shareFile(blob, name, how) {
   const file = new File([blob], name, { type: blob.type });
-  // iPhone・iPad だけ共有の画面から保存(ホーム画面のアプリはダウンロードが効かないため)。PC は普通にダウンロード
-  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
+  if (how === 'ios') {
+    if (!(navigator.canShare && navigator.canShare({ files: [file] }))) { toast('この端末では iPhone 用は使えません。「PC に保存」のボタンを使ってください', 4500); return false; }
     try { await navigator.share({ files: [file] }); return true; }
     catch (e) {
       if (e && e.name === 'AbortError') return false;
@@ -99,7 +101,7 @@ function undo() {
   S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') { S.zc = null; S.mode = 'sec'; } hidePop();
   let i = P.pages.findIndex(q => q.id === pid);          // 見ていた図面のまま
   changed();
-  if (i < 0) { i = Math.min(P.cur, P.pages.length - 1); P.cur = -1; if (i >= 0) gotoPage(i, true); }
+  if (i < 0) { i = Math.min(P.cur, P.pages.length - 1); P.cur = -1; if (i >= 0) gotoPage(i, true); else showNoPage(); }
   else { P.cur = i; $('pageLbl').textContent = pageName(P, i) + (P.pages.length > 1 ? `(${i + 1}/${P.pages.length})` : ''); renderPgNav(); renderScaleLbl(); redraw(); renderItemBar(); }
   if (S.mode === 'review') startReview();
   toast('元に戻しました');
@@ -127,9 +129,9 @@ async function renderHome() {
     (est && est.usage ? `(使っている容量 ${Math.round(est.usage / 1048576)}MB)` : '');
 }
 async function projMenu(p) {
-  const r = await dialog(p.name, '', [{ label: '名前を変える', value: 'ren' }, { label: '案件ファイルに書き出す', value: 'exp' }, { label: '消す', cls: 'warn', value: 'del' }, { label: '閉じる', value: null }]);
+  const r = await dialog(p.name, '', [{ label: '名前を変える', value: 'ren' }, { label: '案件ファイルを PC に保存', value: 'exp-pc' }, { label: '案件ファイルを iPhone で保存', value: 'exp-ios' }, { label: '消す', cls: 'warn', value: 'del' }, { label: '閉じる', value: null }]);
   if (r === 'ren') { const v = await askText('名前を変える', '案件の名前', p.name); if (v && v.trim()) { p.name = v.trim(); await Store.putProj(p); renderHome(); } }
-  if (r === 'exp') { busy(true, '書き出し中…'); try { await shareFile(await Store.exportProj(p), p.name + '.hiroicho'); } finally { busy(false); } }
+  if (r === 'exp-pc' || r === 'exp-ios') { busy(true, '書き出し中…'); let b; try { b = await Store.exportProj(p); } catch (e) { toast(e.message, 4000); } finally { busy(false); } if (b) await shareFile(b, p.name + '.hiroicho', r === 'exp-pc' ? 'pc' : 'ios'); }
   if (r === 'del') { if (await confirmDlg('案件を消す', '「' + p.name + '」を消します。図面と拾った印もすべて消えます(元に戻せません)。', '消す', 'warn')) { await Store.delProj(p); renderHome(); } }
 }
 
@@ -245,7 +247,7 @@ async function openProject(id) {
     if (!activeIt() && P.items.length) P.activeItem = P.items[0].id;
     renderItemBar();
     if (P.pages.length) await gotoPage(Math.min(P.cur || 0, P.pages.length - 1), true);
-    else { P.cur = 0; ['baseC', 'detC'].forEach(k => { $(k).width = $(k).height = 0; }); $('ovl').innerHTML = ''; $('pageLbl').textContent = '図面なし'; renderPgNav();
+    else { showNoPage();
       setTimeout(() => hint('図面がありません。上の「図面なし」→「＋ 図面を追加」で入れてください', 6000), 400); }
     Store.persist();
     if (!P.items.length) setTimeout(() => hint('まず「部材を選ぶ」から部材を追加してください(Excel からまとめて貼り付けもできます)', 6000), 400);
@@ -257,12 +259,16 @@ async function pageSrc(pg) {
   if (pg.p) {
     const page = await d.getPage(pg.p), vp = page.getViewport({ scale: RS });
     pg.w = vp.width; pg.h = vp.height;
-    return { w: pg.w, h: pg.h, render: (ctx, k, x0, y0) => page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: RS * k }), transform: [1, 0, 0, 1, -x0 * k, -y0 * k] }).promise };
+    return { w: pg.w, h: pg.h, render: (ctx, k, x0, y0, w, h, print) => page.render({ canvasContext: ctx, viewport: page.getViewport({ scale: RS * k }), transform: [1, 0, 0, 1, -x0 * k, -y0 * k], intent: print ? 'print' : 'display' }).promise };
   }
   const W = pg.paper / MM_PER_U, H = W * d.naturalHeight / d.naturalWidth; pg.w = W; pg.h = H;
   return { w: W, h: H, render: async (ctx, k, x0, y0, w, h) => {
     const fx = d.naturalWidth / W; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(d, x0 * fx, y0 * fx, w * fx, h * fx, 0, 0, w * k, h * k); } };
+}
+function showNoPage() {
+  P.cur = 0; Viewer.clear(); ['baseC', 'detC'].forEach(k => { $(k).width = $(k).height = 0; }); $('ovl').innerHTML = '';
+  $('pageLbl').textContent = '図面なし'; renderPgNav(); renderScaleLbl(); renderItemBar();
 }
 let navTok = 0;
 async function gotoPage(i, fit) {
@@ -526,7 +532,7 @@ function zonePop(z, e, q) {
     ren: async () => { const v = await askText('工区の名前', '新しい名前', z.name); if (v && v.trim()) { push(); const pg = curPage(), old = z.name; z.name = v.trim();
       if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) l.zn = z.name; });   // 選んであった工区も新しい名前に
       changed(); redraw(); } },
-    del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); pg.zones.splice(pg.zones.indexOf(z), 1);
+    del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); { const zi = pg.zones.indexOf(z); if (zi < 0) return; pg.zones.splice(zi, 1); }
       if (!pg.zones.some(q => q.name === z.name)) pg.lens.forEach(l => { if (l.zn === z.name) delete l.zn; });   // 選んであった工区が無くなったら「未定」に戻す
       changed(); redraw(); } },
     x: () => {}
@@ -569,7 +575,7 @@ async function addSec(a, b) {
   const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
   pg.secs.push({ id: nextId(P), name: nm.trim(), pts: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }] });
   const was = pg.zp; pg.zp = true;
-  changed(); redraw(); toast('伏図「' + nm.trim() + '」を追加しました' + (was ? '' : '(この図面を工区毎P算出に入れました)'), 3500);
+  changed(); redraw(); toast('伏図「' + nm.trim() + '」を追加しました' + (was ? '' : '(この図面を書き出しに入れました)'), 3500);
 }
 function zonesIn(sc, pg) { return pg.zones.filter(z => { const c = polyC(z.pts); return pip(sc.pts, c.x, c.y); }); }
 function secPop(sc, e, q) {
@@ -578,7 +584,7 @@ function secPop(sc, e, q) {
     cp: () => startZcopy(sc),
     draw: () => { S.secPts = [q]; redraw(); hint('伏図: 範囲の反対の角をタップ', 3000); },
     ren: async () => { const v = await askText('伏図の名前', '新しい名前', sc.name); if (v && v.trim()) { push(); sc.name = v.trim(); changed(); redraw(); } },
-    del: async () => { if (await confirmDlg('伏図の範囲を消す', '伏図「' + sc.name + '」の範囲を消します(中の工区と拾った印は残ります)。', '消す', 'warn')) { push(); pg.secs.splice(pg.secs.indexOf(sc), 1); changed(); redraw(); } },
+    del: async () => { if (await confirmDlg('伏図の範囲を消す', '伏図「' + sc.name + '」の範囲を消します(中の工区と拾った印は残ります)。', '消す', 'warn')) { push(); { const si = pg.secs.indexOf(sc); if (si < 0) return; pg.secs.splice(si, 1); } changed(); redraw(); } },
     x: () => {}
   });
 }
@@ -744,9 +750,9 @@ function openPageSheet() {
         <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span></div>`;
     }).join('');
     $('bsBody').innerHTML = `<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
-      <div class="add"><button id="bsZp">${curPage().zp ? '✓ 工区毎P算出に入れる' : '工区毎P算出に入れない'}</button><button id="bsDelPg" style="color:var(--warn)">この図面を消す</button></div>`;
-    $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を工区毎P算出に' + (pg.zp ? '入れます' : '入れません')); };
-    $('bsDelPg').onclick = async () => {
+      ${curPage() ? `<div class="add"><button id="bsZp">${curPage().zp ? '☑ 書き出しに入れている(押すと外す)' : '☐ 書き出しに入れる'}</button><button id="bsDelPg" style="color:var(--warn)">この図面を消す</button></div>` : ''}`;
+    if ($('bsZp')) $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を書き出しに' + (pg.zp ? '入れます' : '入れません')); };
+    if ($('bsDelPg')) $('bsDelPg').onclick = async () => {
       closeSheet(); const pg = curPage(), n = pg.dots.length + pg.lens.length;
       if (P.pages.length <= 1) { await dialog('図面を消す', '<p>最後の1枚は消せません。図面を差し替えるときは、先に「＋ 図面を追加」で新しい図面を入れてから、古い図面を消してください。</p>', [{ label: 'OK', cls: 'pri', value: true }]); return; }
       if (!(await confirmDlg('図面を消す', '「' + pageName(P, P.cur) + '」を案件から消します。' + (n ? 'この図面で拾った印 ' + n + '件も消えます。' : ''), '消す', 'warn'))) return;
@@ -758,13 +764,23 @@ function openPageSheet() {
     };
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); gotoPage(+r.dataset.i, true); });
     $('bsAddPdf').onclick = () => { closeSheet(); filesFor = 'add'; $('fFiles').value = ''; $('fFiles').click(); };
-    $('bsRen').onclick = async () => { closeSheet(); const v = await askText('図面の名前', '工区毎P算出などの見出しに使います', pageName(P, P.cur)); if (v && v.trim()) { push(); curPage().name = v.trim(); changed(); $('pageLbl').textContent = pageName(P, P.cur); } };
+    $('bsRen').onclick = async () => { closeSheet(); if (!curPage()) return; const v = await askText('図面の名前', '工区毎P算出などの見出しに使います', pageName(P, P.cur)); if (v && v.trim()) { push(); curPage().name = v.trim(); changed(); $('pageLbl').textContent = pageName(P, P.cur); } };
   }, false);
 }
 $('btnPage').onclick = openPageSheet;
-/* 工区毎P算出に入れる図面を選ぶ */
+/* 書き出し(Excel・PDF)と工区毎P算出に使う図面: 選んだ図面だけ。伏図を囲んだ図面は、その範囲の中の拾いだけ */
+async function exportScope() {
+  if (!P.pages.some(q => q.zp)) { toast('書き出す図面を選んでください'); if (!(await pickZpPages())) return null; renderLedger(); if (!P.pages.some(q => q.zp)) return null; }
+  const pages = []; let dropped = 0;
+  P.pages.forEach((pg, i) => { if (!pg.zp) return;
+    const q = Object.assign({}, pg, { name: pageName(P, i) });
+    if (secsOf(pg).length) { const inS = o => { const m = markPt(o); return !!secAt(pg, m.x, m.y); }; q.dots = pg.dots.filter(inS); q.lens = pg.lens.filter(inS);
+      dropped += pg.dots.length + pg.lens.length - q.dots.length - q.lens.length; }
+    pages.push(q); });
+  return Object.assign({}, P, { pages, dropped, skipped: P.pages.filter(q => !q.zp).length });
+}
 async function pickZpPages() {
-  const r = await dialog('工区毎P算出に入れる図面', '<p style="font-size:13px;color:var(--ink2)">チェックした図面が、工区毎P算出の「数量1・数量2…」の列になります。伏図の範囲を囲んだ図面は、その範囲ごとの列になります。</p>' +
+  const r = await dialog('書き出す図面', '<p style="font-size:13px;color:var(--ink2)">チェックした図面だけを Excel・PDF に書き出し、工区毎P算出の「数量1・数量2…」の列にします。伏図の範囲を囲んだ図面は、その範囲の中だけ(範囲ごとの列)になります。</p>' +
     P.pages.map((pg, i) => { const ns = secsOf(pg).length;
       return `<div class="jrow"><input type="checkbox" id="zp${i}"${pg.zp ? ' checked' : ''}><label for="zp${i}"><b>${esc(pageName(P, i))}</b><small>${ns ? '伏図 ' + ns + '個(' + secsOf(pg).map(x => esc(x.name)).join('・') + ')' : '図面1枚で1列'}</small></label><span></span></div>`; }).join(''),
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => P.pages.map((pg, i) => $('zp' + i).checked) }]);
@@ -782,6 +798,7 @@ $('pgNext').onclick = () => stepPage(1);
 /* 区切り(標準の部材の「G梁」など)の見出し */
 function grpHead(it, prev) { return it.grp && (!prev || prev.grp !== it.grp) ? `<div class="gh">${esc(it.grp)}</div>` : ''; }
 $('btnScale').onclick = async () => {
+  if (!curPage()) { toast('先に図面を入れてください'); return; }
   const n = scaleN(curPage());
   const r = await dialog('縮尺', `<label>縮尺 1/○ の ○</label><input id="dIn" type="number" inputmode="decimal" value="${n ? Math.round(n * 100) / 100 : ''}" placeholder="100">
     <p style="margin-top:10px;color:var(--ink2);font-size:13px">分からないときは「2点で合わせる」で、寸法の分かっている2点(通り芯など)をタップします。</p>`,
@@ -817,9 +834,9 @@ function renderLedger() {
     // 工区毎P算出(伏図 × 工区 × 柱/G/B/他)
     const Z = zoneTable(P, a, zMode), fz = v => !v ? '' : zMode === 'len' ? v.toFixed(1) : String(v);
     const nzp = P.pages.filter(q => q.zp).length;
-    let h = '<div class="sec"><h3>工区毎P算出</h3><p class="note" style="padding:0 0 6px">集計する図面: ' + (nzp ? nzp + '枚 / ' + P.pages.length + '枚' : '<b style="color:var(--warn)">まだ選んでいません</b>') +
+    let h = '<div class="sec"><h3>工区毎P算出</h3><p class="note" style="padding:0 0 6px">書き出す図面: ' + (nzp ? nzp + '枚 / ' + P.pages.length + '枚' : '<b style="color:var(--warn)">まだ選んでいません</b>') +
       ' <button class="chip" id="zpPick" style="margin-left:6px">図面を選ぶ</button></p><div class="seg mini" id="zmSeg">' + Object.keys(ZMODE).map(m => `<button data-m="${m}" class="${m === zMode ? 'on' : ''}">${ZMODE[m]}</button>`).join('') + '</div></div>';
-    if (!nzp) h += '<p class="note">「図面を選ぶ」で、工区毎P算出に入れる図面(伏図)を選んでください。1枚に 2F・3F… と並んでいる図面は、図面の「伏図」で範囲を分けると、その範囲ごとの列になります。</p>';
+    if (!nzp) h += '<p class="note">「図面を選ぶ」で、書き出す図面(伏図)を選んでください。1枚に 2F・3F… と並んでいる図面は、図面の「伏図」で範囲を分けると、その範囲ごとの列になります。</p>';
     else if (!Z.zones.length) h += '<p class="note">工区がまだありません。図面の「工区」で範囲を囲むと、ここに工区ごとの数が出ます。</p>';
     else {
       h += '<div class="tblWrap"><table class="mx zt"><tr><th></th>' + Z.blocks.map(b => `<th colspan="5" class="bh">${esc(b)}</th>`).join('') + '<th></th></tr><tr><th>工区</th>' +
@@ -851,18 +868,34 @@ function renderLedger() {
     $('goRev').onclick = () => { show('draw'); setMode('review'); };
     $('resetRev').onclick = async () => { if (await confirmDlg('見直しをやり直す', '全部の印の「見直し OK」を外します。', '外す', 'warn')) { push(); P.pages.forEach(pg => [...pg.dots, ...pg.lens].forEach(o => delete o.rv)); changed(); renderLedger(); } };
   } else {
-    body.innerHTML = kpi + `<div class="sec"><h3>Excel に書き出す</h3><p>部材・集計・吊材積算・手付積算・工区毎P算出の表を、Excel ファイル(.xlsx)にします。</p>
-      <button class="big" id="expX">Excel に書き出す</button>
-      <h3>印刷用の PDF</h3><p>拾った印を描いた図面(線の長さ・部材名・重さ・工区つき)と、その次のページにその図面の部材の表を入れた PDF です。</p>
-      <button class="big ghost" id="expPdf">印刷用の PDF に書き出す</button>
-      <h3>案件ファイル(控え・PC との受け渡し)</h3><p>図面と拾った印をまとめた1つのファイルです。PC や別の iPhone の拾い帳で「案件ファイルを読み込む」から開けます。控えとしても保存しておいてください。</p>
-      <button class="big ghost" id="expP">案件ファイルに書き出す</button></div>`;
-    $('expX').onclick = async () => { busy(true, 'Excel を作っています…'); try { await saveNow(); await shareFile(await Excel.blob(P), P.name + '_拾い帳.xlsx'); } catch (e) { toast(e.message, 4000); } finally { busy(false); } };
-    $('expPdf').onclick = async () => { busy(true, 'PDF を作っています…'); try { await saveNow();
-        const b = await PrintPdf.blob(P, pageSrc, (i, n) => busy(true, 'PDF を作っています… ' + i + ' / ' + n));
-        busy(false); await shareFile(b, P.name + '_拾い図.pdf'); } catch (e) { console.error(e); toast(e.message, 4000); } finally { busy(false); } };
-    $('expP').onclick = async () => { busy(true, '書き出し中…'); try { await saveNow(); await shareFile(await Store.exportProj(P), P.name + '.hiroicho'); } catch (e) { toast(e.message, 4000); } finally { busy(false); } };
+    const nzp = P.pages.filter(q => q.zp).length;
+    body.innerHTML = kpi + `<div class="sec"><h3>書き出す図面(Excel・PDF)</h3><p>${nzp ? nzp + '枚 / ' + P.pages.length + '枚(選んだ図面だけ。伏図を囲んだ図面は、その範囲の中だけ)' : '<b style="color:var(--warn)">まだ選んでいません</b>'}
+      <button class="chip" id="expPick" style="margin-left:6px">図面を選ぶ</button></p>
+      <p style="font-size:12.5px">Excel = 部材・集計・吊材積算・手付積算・工区毎P算出の表 / PDF = 拾った印を描いた図面と、その次のページに部材の表 / 案件ファイル = 図面と拾った印の控え(全部の図面)</p></div>
+      <div class="expBox"><h3>PC に保存</h3><p>押すと、そのままダウンロードフォルダに入ります。</p>
+        <div class="expBtns"><button class="big" data-f="x" data-h="pc">Excel</button><button class="big ghost" data-f="pdf" data-h="pc">PDF</button><button class="big ghost" data-f="p" data-h="pc">案件ファイル</button></div></div>
+      <div class="expBox"><h3>iPhone で保存</h3><p>押すと共有の画面が出ます。「"ファイル"に保存」を選んでください。</p>
+        <div class="expBtns"><button class="big" data-f="x" data-h="ios">Excel</button><button class="big ghost" data-f="pdf" data-h="ios">PDF</button><button class="big ghost" data-f="p" data-h="ios">案件ファイル</button></div></div>
+      <p class="note">拾い帳 ${APP_VER}</p>`;
+    $('expPick').onclick = async () => { if (await pickZpPages()) renderLedger(); };
+    body.querySelectorAll('.expBtns button').forEach(b => b.onclick = () => doExport(b.dataset.f, b.dataset.h));
   }
+}
+
+/* 書き出し: f = 'x'(Excel) / 'pdf' / 'p'(案件ファイル)、how = 'pc' / 'ios' */
+async function doExport(f, how) {
+  let blob = null, name = '';
+  try {
+    if (f === 'p') { busy(true, '書き出し中…'); await saveNow(); blob = await Store.exportProj(P); name = P.name + '.hiroicho'; }
+    else {
+      const Q = await exportScope(); if (!Q) return;
+      await saveNow();
+      if (f === 'x') { busy(true, 'Excel を作っています…'); blob = await Excel.blob(Q); name = P.name + '_拾い帳.xlsx'; }
+      else { busy(true, 'PDF を作っています…'); blob = await PrintPdf.blob(Q, pageSrc, (i, n) => busy(true, 'PDF を作っています… ' + i + ' / ' + n)); name = P.name + '_拾い図.pdf'; }
+    }
+  } catch (e) { console.error(e); busy(false); toast(e.message || String(e), 5000); return; }
+  busy(false);
+  if (await shareFile(blob, name, how) && how === 'pc') toast('「' + name + '」をダウンロードフォルダに保存しました', 3500);
 }
 
 /* ═════════ 部材の編集 ═════════ */
@@ -993,6 +1026,7 @@ Viewer.init({ view: $('view'), sheet: $('sheet'), baseC: $('baseC'), detC: $('de
 });
 document.addEventListener('keydown', e => {
   if (!P || $('draw').classList.contains('hidden')) return;
+  if (!$('dlgBg').classList.contains('hidden') || !$('bsheet').classList.contains('hidden')) return;   // 入力の窓・一覧が出ている間は効かせない
   if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
   if (e.key === 'Escape') { S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') setMode('sec'); hidePop(); redraw(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }

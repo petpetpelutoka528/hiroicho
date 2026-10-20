@@ -27,7 +27,9 @@ const PrintPdf = (() => {
     const c = document.createElement('canvas');
     c.width = Math.round(src.w * k); c.height = Math.round(src.h * k);
     const ctx = c.getContext('2d'); if (!ctx) throw new Error('メモリが足りず PDF を作れませんでした。アプリを開き直してからもう一度お試しください'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-    await src.render(ctx, k, 0, 0, src.w, src.h);
+    // 'print' で描く(画面を切り替えても止まらない)。1分たっても終わらなければ止めて知らせる
+    let tm; await Promise.race([src.render(ctx, k, 0, 0, src.w, src.h, true),
+      new Promise((_, rej) => { tm = setTimeout(() => rej(new Error(pageName(P, pi) + ' の図面を描けませんでした(時間切れ)')), 60000); })]).finally(() => clearTimeout(tm));
     const pt = v => v * pxPerPt;                           // 紙の上の pt → px
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     const label = (txt, x, y, col, size, align, box) => {
