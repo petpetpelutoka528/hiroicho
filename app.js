@@ -545,7 +545,8 @@ async function addSec(a, b) {
   push(); if (!pg.secs) pg.secs = [];
   const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
   pg.secs.push({ id: nextId(P), name: nm.trim(), pts: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }] });
-  changed(); redraw(); toast('伏図「' + nm.trim() + '」を追加しました');
+  const was = pg.zp; pg.zp = true;
+  changed(); redraw(); toast('伏図「' + nm.trim() + '」を追加しました' + (was ? '' : '(この図面を工区毎P算出に入れました)'), 3500);
 }
 function zonesIn(sc, pg) { return pg.zones.filter(z => { const c = polyC(z.pts); return pip(sc.pts, c.x, c.y); }); }
 function secPop(sc, e, q) {
@@ -720,7 +721,8 @@ function openPageSheet() {
         <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span></div>`;
     }).join('');
     $('bsBody').innerHTML = `<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
-      <div class="add"><button id="bsDelPg" style="color:var(--warn)">この図面を消す</button></div>`;
+      <div class="add"><button id="bsZp">${curPage().zp ? '✓ 工区毎P算出に入れる' : '工区毎P算出に入れない'}</button><button id="bsDelPg" style="color:var(--warn)">この図面を消す</button></div>`;
+    $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を工区毎P算出に' + (pg.zp ? '入れます' : '入れません')); };
     $('bsDelPg').onclick = async () => {
       closeSheet(); const pg = curPage(), n = pg.dots.length + pg.lens.length;
       if (P.pages.length <= 1) { await dialog('図面を消す', '<p>最後の1枚は消せません。図面を差し替えるときは、先に「＋ 図面を追加」で新しい図面を入れてから、古い図面を消してください。</p>', [{ label: 'OK', cls: 'pri', value: true }]); return; }
@@ -737,6 +739,15 @@ function openPageSheet() {
   }, false);
 }
 $('btnPage').onclick = openPageSheet;
+/* 工区毎P算出に入れる図面を選ぶ */
+async function pickZpPages() {
+  const r = await dialog('工区毎P算出に入れる図面', '<p style="font-size:13px;color:var(--ink2)">チェックした図面が、工区毎P算出の「数量1・数量2…」の列になります。伏図の範囲を囲んだ図面は、その範囲ごとの列になります。</p>' +
+    P.pages.map((pg, i) => { const ns = secsOf(pg).length;
+      return `<div class="jrow"><input type="checkbox" id="zp${i}"${pg.zp ? ' checked' : ''}><label for="zp${i}"><b>${esc(pageName(P, i))}</b><small>${ns ? '伏図 ' + ns + '個(' + secsOf(pg).map(x => esc(x.name)).join('・') + ')' : '図面1枚で1列'}</small></label><span></span></div>`; }).join(''),
+    [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => P.pages.map((pg, i) => $('zp' + i).checked) }]);
+  if (!Array.isArray(r)) return false;
+  push(); P.pages.forEach((pg, i) => { if (r[i]) pg.zp = true; else delete pg.zp; }); changed(); return true;
+}
 function renderPgNav() {
   const many = P.pages.length > 1;
   $('pgPrev').classList.toggle('hidden', !many); $('pgNext').classList.toggle('hidden', !many);
@@ -782,8 +793,11 @@ function renderLedger() {
     const zs = a.cols.filter(c => c !== '__none'), cols = zs.length ? [...zs, '__none'] : [];
     // 工区毎P算出(伏図 × 工区 × 柱/G/B/他)
     const Z = zoneTable(P, a, zMode), fz = v => !v ? '' : zMode === 'len' ? v.toFixed(1) : String(v);
-    let h = '<div class="sec"><h3>工区毎P算出</h3><div class="seg mini" id="zmSeg">' + Object.keys(ZMODE).map(m => `<button data-m="${m}" class="${m === zMode ? 'on' : ''}">${ZMODE[m]}</button>`).join('') + '</div></div>';
-    if (!Z.zones.length) h += '<p class="note">工区がまだありません。図面の「工区」で範囲を囲むと、ここに工区ごとの数が出ます。1枚に 2F・3F… と並んでいるときは、先に「伏図」で範囲を分けてください。</p>';
+    const nzp = P.pages.filter(q => q.zp).length;
+    let h = '<div class="sec"><h3>工区毎P算出</h3><p class="note" style="padding:0 0 6px">集計する図面: ' + (nzp ? nzp + '枚 / ' + P.pages.length + '枚' : '<b style="color:var(--warn)">まだ選んでいません</b>') +
+      ' <button class="chip" id="zpPick" style="margin-left:6px">図面を選ぶ</button></p><div class="seg mini" id="zmSeg">' + Object.keys(ZMODE).map(m => `<button data-m="${m}" class="${m === zMode ? 'on' : ''}">${ZMODE[m]}</button>`).join('') + '</div></div>';
+    if (!nzp) h += '<p class="note">「図面を選ぶ」で、工区毎P算出に入れる図面(伏図)を選んでください。1枚に 2F・3F… と並んでいる図面は、図面の「伏図」で範囲を分けると、その範囲ごとの列になります。</p>';
+    else if (!Z.zones.length) h += '<p class="note">工区がまだありません。図面の「工区」で範囲を囲むと、ここに工区ごとの数が出ます。</p>';
     else {
       h += '<div class="tblWrap"><table class="mx zt"><tr><th></th>' + Z.blocks.map(b => `<th colspan="5" class="bh">${esc(b)}</th>`).join('') + '<th></th></tr><tr><th>工区</th>' +
         Z.blocks.map(() => ZCATS.map(c => `<th>${c}</th>`).join('') + '<th class="sub">小計</th>').join('') + '<th>合計</th></tr>';
@@ -803,6 +817,7 @@ function renderLedger() {
     P.items.forEach(it => { h += `<tr><td>${esc(it.name)}</td>` + P.pages.map((pg, i) => `<td>${qtyTxt(it, a.PG[it.id][i])}</td>`).join('') + `<td><b>${qtyTxt(it, a.T[it.id])}</b></td></tr>`; });
     body.innerHTML = kpi + h + '</table></div>';
     body.querySelectorAll('#zmSeg button').forEach(b => b.onclick = () => { zMode = b.dataset.m; renderLedger(); });
+    $('zpPick').onclick = async () => { if (await pickZpPages()) renderLedger(); };
   } else if (ledTab === 'check') {
     const iss = issues(P, a);
     let h = kpi + '<div class="issues"><h3>気になる点</h3><ul>' + (iss.length ? iss.map(s => `<li>${esc(s)}</li>`).join('') : '<li>気になる点はありません</li>') + '</ul>';

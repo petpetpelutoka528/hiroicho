@@ -14,9 +14,9 @@ const PrintPdf = (() => {
       document.head.appendChild(s);
     }));
   }
-  const DPI = 200;
+  const DPI = 150;                                       // iPhone のメモリに収まるように
   const FONT = '-apple-system,"Hiragino Sans","Hiragino Kaku Gothic ProN","Yu Gothic","Meiryo","Noto Sans CJK JP",sans-serif';
-  const MAXPX = 15e6;                                      // iPhone の canvas の上限(約1670万画素)より少なく
+  const MAXPX = 8e6;                                       // 1枚の画像の画素数の上限(iPhone はメモリが少ない)
   const toBytes = c => new Promise((res, rej) => c.toBlob(b => b ? b.arrayBuffer().then(a => res(new Uint8Array(a)), rej) : rej(new Error('PDF の画像を作れませんでした(図面が大きすぎます)')), 'image/jpeg', 0.88));
   const dpiFor = (wPt, hPt) => Math.min(DPI, 72 * Math.sqrt(MAXPX / (wPt * hPt)));
 
@@ -26,7 +26,7 @@ const PrintPdf = (() => {
     const pxPerPt = dpiFor(src.w / RS, src.h / RS) / 72, k = pxPerPt / RS;   // 1u あたりの px
     const c = document.createElement('canvas');
     c.width = Math.round(src.w * k); c.height = Math.round(src.h * k);
-    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    const ctx = c.getContext('2d'); if (!ctx) throw new Error('メモリが足りず PDF を作れませんでした。アプリを開き直してからもう一度お試しください'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
     await src.render(ctx, k, 0, 0, src.w, src.h);
     const pt = v => v * pxPerPt;                           // 紙の上の pt → px
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -86,7 +86,7 @@ const PrintPdf = (() => {
   }
 
   /* その図面の部材の表(1ページに入らなければ続きのページ) */
-  function tableCanvases(P, pi, A, wPt, hPt) {
+  function* tableCanvases(P, pi, A, wPt, hPt) {
     const pg = P.pages[pi], pxPerPt = dpiFor(wPt, hPt) / 72, pt = v => v * pxPerPt;
     const zs = [...new Set(pg.zones.map(z => z.name))].sort(natCmp);
     const rows = [];
@@ -109,12 +109,12 @@ const PrintPdf = (() => {
     const usable = wPt - margin * 2; const fixed = cols.reduce((s, c) => s + c.w, 0);
     if (zs.length) cols[cols.length - 1].w = Math.max(120, usable - fixed);
     const perPage = Math.max(1, Math.floor((hPt - top - margin - rowH * 2) / rowH));
-    const out = [];
+
     const total = { n: 0, mm: 0, sl: 0, hd: 0, kg: 0 };
     rows.forEach(r => { total.kg += r.c.kg; total.sl += r.c.sl; total.hd += r.c.hd; });
     for (let s = 0; s === 0 || s < rows.length; s += perPage) {
       const c = document.createElement('canvas'); c.width = Math.round(pt(wPt)); c.height = Math.round(pt(hPt));
-      const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      const ctx = c.getContext('2d'); if (!ctx) throw new Error('メモリが足りず PDF を作れませんでした。アプリを開き直してからもう一度お試しください'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
       const text = (t, x, y, size, al, bold, col) => { ctx.font = `${bold ? 700 : 400} ${pt(size)}px ${FONT}`; ctx.textAlign = al || 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = col || '#2b2620'; ctx.fillText(t, pt(x), pt(y)); };
       text(pageName(P, pi) + ' の部材' + (s ? '(つづき)' : ''), margin, 34, 15, 'left', true);
       text(P.name + (pg.scale ? '   縮尺 1/' + Math.round(scaleN(pg) * 100) / 100 : '   縮尺 未設定') + '   ' + new Date().toLocaleDateString('ja-JP'), margin, 54, 9, 'left', false, '#6b6355');
@@ -145,10 +145,10 @@ const PrintPdf = (() => {
         hline(y, 1.2);
         text('この図面の計   吊 ' + total.sl + '本   手付 ' + total.hd + '本   重量 ' + total.kg.toFixed(1) + ' kg', margin + 4, y + rowH / 2 + 2, 10, 'left', true);
       }
-      out.push(c);
+      yield c;
       if (!rows.length) break;
     }
-    return out;
+
   }
 
   async function blob(P, pageSrc, onStep) {

@@ -90,10 +90,12 @@ function distSeg(px, py, x1, y1, x2, y2) {
 function secsOf(pg) { return (pg && pg.secs) || []; }
 function secAt(pg, x, y) { const ss = secsOf(pg); for (let i = ss.length - 1; i >= 0; i--) if (pip(ss[i].pts, x, y)) return ss[i]; return null; }
 function polyC(pts) { return pts.reduce((a, p) => ({ x: a.x + p.x / pts.length, y: a.y + p.y / pts.length }), { x: 0, y: 0 }); }
-/* 印の「かたまり」(工区毎P算出の 数量1・数量2… の単位): 伏図の範囲があればその名前、なければ図面の名前 */
+/* 印の「かたまり」(工区毎P算出の 数量1・数量2… の単位)
+   工区毎P算出に入れる図面(pg.zp)だけ。図面1枚で1つ。伏図の範囲を囲んだ図面だけは、その範囲ごと(範囲の外は入れない) */
 function blockOf(P, pi, o) {
-  const pg = P.pages[pi]; if (!secsOf(pg).length) return pageName(P, pi);
-  const p = markPt(o), s = secAt(pg, p.x, p.y); return s ? s.name : pageName(P, pi) + '(伏図の外)';
+  const pg = P.pages[pi]; if (!pg.zp) return null;
+  if (!secsOf(pg).length) return pageName(P, pi);
+  const p = markPt(o), s = secAt(pg, p.x, p.y); return s ? s.name : null;
 }
 function zoneNames(P) {
   const seen = new Map();
@@ -139,14 +141,14 @@ const ZMODE = { sl: '吊(本)', hd: '手付(本)', len: '長さ(m)' };
 function zoneTable(P, A, mode) {
   const blocks = [];
   P.pages.forEach((pg, pi) => {
+    if (!pg.zp) return;
     const ss = secsOf(pg);
     if (!ss.length) { const n = pageName(P, pi); if (!blocks.includes(n)) blocks.push(n); }
     else ss.map(s => s.name).sort(natCmp).forEach(n => { if (!blocks.includes(n)) blocks.push(n); });
   });
   const V = {}, use = rw => rw.it.kind === 'mem' && (mode === 'len' ? true : rw.j === (mode === 'hd' ? '手付' : '吊'));
   let outside = false;
-  A.rows.forEach(rw => { if (!use(rw)) return;
-    if (!blocks.includes(rw.blk)) blocks.push(rw.blk);
+  A.rows.forEach(rw => { if (!rw.blk || !use(rw)) return;
     const z = rw.zone === '__none' ? '' : rw.zone; if (!z) outside = true;
     const k = rw.blk + '|' + z + '|' + catOf(rw.it); V[k] = (V[k] || 0) + (mode === 'len' ? rw.mm / 1000 : 1); });
   const zones = [...zoneNames(P), ...(outside ? [''] : [])];
@@ -171,6 +173,8 @@ function issues(P, A) {
   P.pages.forEach((pg, pi) => { if (!pg.scale && pg.lens.length) out.push(pageName(P, pi) + ' は縮尺が未設定なのに線があります(長さ0)'); });
   if (A.orphan) out.push('部材の一覧にない部材の拾い  ' + A.orphan + '件(部材を消した場合など)');
   const dup = dupMarks(P); if (dup.length) out.push('同じ部材がほぼ同じ場所に2回拾われている  ' + dup.length + '件(見直しで確認)');
+  const outSec = A.rows.filter(r => !r.blk && P.pages[r.pi].zp && secsOf(P.pages[r.pi]).length && r.it.kind === 'mem').length;
+  if (outSec) out.push('工区毎P算出に入れる図面で、伏図の範囲の外にある部材  ' + outSec + '件(工区毎P算出には入りません)');
   const t = totals(P, A); if (t.n && t.rv < t.n) out.push('見直しがまだの印  ' + (t.n - t.rv) + '件 / ' + t.n + '件');
   return out;
 }
