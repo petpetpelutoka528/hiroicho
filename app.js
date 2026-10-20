@@ -43,14 +43,16 @@ async function askText(t, label, val, type) {
 }
 async function shareFile(blob, name) {
   const file = new File([blob], name, { type: blob.type });
-  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+  // iPhone・iPad だけ共有の画面から保存(ホーム画面のアプリはダウンロードが効かないため)。PC は普通にダウンロード
+  const isIOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  if (isIOS && navigator.canShare && navigator.canShare({ files: [file] })) {
     try { await navigator.share({ files: [file] }); return true; }
     catch (e) {
       if (e && e.name === 'AbortError') return false;
       // 作るのに時間がかかると、iPhone は続けて共有させてくれない → ボタンをもう一度押してもらう
       return new Promise(res => {
         $('dlgTitle').textContent = '書き出しの準備ができました';
-        $('dlgBody').innerHTML = '<p>「' + esc(name) + '」</p><p>「共有・保存」を押して、保存先(ファイルに保存・AirDrop・メールなど)を選んでください。</p>';
+        $('dlgBody').innerHTML = '<p>「' + esc(name) + '」</p><p>「共有・保存」を押して、出てきた画面の「"ファイル"に保存」を選んでください。</p>';
         const bb = $('dlgBtns'); bb.innerHTML = '';
         const c = document.createElement('button'); c.textContent = '閉じる'; c.onclick = () => { $('dlgBg').classList.add('hidden'); res(false); };
         const s = document.createElement('button'); s.textContent = '共有・保存'; s.className = 'pri';
