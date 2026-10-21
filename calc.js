@@ -157,6 +157,8 @@ function zoneTable(P, A, mode) {
   return { blocks, zones, get };
 }
 /* 表示する部材: 「拾った部材だけ」(P.onlyUsed)なら数量のある部材だけ。keepId の部材(選んでいる部材)は残す */
+/* Excel に入れる部材: 書き出しの「拾った部材だけ」(P.xlOnlyUsed)なら数量のある部材だけ。画面の切り替えとは別 */
+function xlItems(P, A) { return P.xlOnlyUsed ? P.items.filter(it => A.T[it.id] && A.T[it.id].n) : P.items; }
 function shownItems(P, A, keepId) { return P.onlyUsed ? P.items.filter(it => (A.T[it.id] && A.T[it.id].n) || it.id === keepId) : P.items; }
 function qtyTxt(it, c) { if (!c || !c.n) return ''; return it.kind === 'm' ? (c.mm / 1000).toFixed(2) : String(c.n); }
 function totals(P, A) {

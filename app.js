@@ -37,6 +37,13 @@ let A = null;                           // 集計(変わったら作り直す)
 
 /* ── 小物 ── */
 function toast(m, ms) { const t = $('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), ms || 2200); }
+/* 何かが変わったら、何がどう変わったかを帯で知らせる。OK を押すまで残る。画面はふさがない(下に積み重なる) */
+function note(m) {
+  const box = $('notes'), el = document.createElement('div'); el.className = 'note';
+  el.innerHTML = '<span></span><button>OK</button>'; el.firstChild.textContent = m;
+  el.lastChild.onclick = () => el.remove();
+  box.prepend(el); while (box.children.length > 2) box.lastChild.remove();
+}
 function hint(m, ms) { const h = $('hint'); if (!m) { h.classList.remove('show'); return; } h.textContent = m; h.classList.add('show'); clearTimeout(h._t); h._t = setTimeout(() => h.classList.remove('show'), ms || 3500); }
 function show(id) { ['home', 'draw', 'ledger', 'items'].forEach(s => $(s).classList.toggle('hidden', s !== id)); }
 function busy(on, txt) { const b = $('busy'); b.textContent = txt || '読み込み中…'; b.classList.toggle('show', !!on); }
@@ -65,7 +72,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v22';   // sw.js の VER と同じ番号にする
+const APP_VER = 'v24';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -136,9 +143,10 @@ async function renderHome() {
     (est && est.usage ? `(使っている容量 ${Math.round(est.usage / 1048576)}MB)` : '');
 }
 async function projMenu(p) {
-  const r = await dialog(p.name, '', [{ label: '名前を変える', value: 'ren' }, { label: '案件ファイルを PC に保存', value: 'exp-pc' }, { label: '案件ファイルを iPhone で保存', value: 'exp-ios' }, { label: '消す', cls: 'warn', value: 'del' }, { label: '閉じる', value: null }]);
+  const r = await dialog(p.name, '', [{ label: '名前を変える', value: 'ren' }, { label: '案件ファイルを PC に保存', value: 'exp-pc' }, { label: '案件ファイルを iPhone で保存', value: 'exp-ios' }, { label: '案件ファイルで置き換える', value: 'rep' }, { label: '消す', cls: 'warn', value: 'del' }, { label: '閉じる', value: null }]);
   if (r === 'ren') { const v = await askText('名前を変える', '案件の名前', p.name); if (v && v.trim()) { p.name = v.trim(); await Store.putProj(p); renderHome(); } }
   if (r === 'exp-pc' || r === 'exp-ios') { busy(true, '書き出し中…'); let b; try { b = await Store.exportProj(p); } catch (e) { toast(e.message, 4000); } finally { busy(false); } if (b) await shareFile(b, p.name + '.hiroicho', r === 'exp-pc' ? 'pc' : 'ios'); }
+  if (r === 'rep') { importFor = p; $('fImport').value = ''; $('fImport').click(); }
   if (r === 'del') { if (await confirmDlg('案件を消す', '「' + p.name + '」を消します。図面と拾った印もすべて消えます(元に戻せません)。', '消す', 'warn')) { await Store.delProj(p); renderHome(); } }
 }
 
@@ -157,10 +165,12 @@ $('fFiles').onchange = async e => {
     await openProject(P.id);
   } else {
     push();
-    const first = P.pages.length;
-    await addFiles(fs, scaleN(curPage()) || 0);
+    const first = P.pages.length, sn = scaleN(curPage()) || 0;
+    await addFiles(fs, sn);
     changed(); await saveNow();
+    const added = P.pages.length - first;
     gotoPage(first);
+    if (added) note('図面を ' + added + '枚 追加しました。' + (sn ? '縮尺は、追加したときに開いていた図面と同じ 1/' + Math.round(sn * 100) / 100 + ' を入れています。違う図面は、その図面で上の縮尺を直してください' : '縮尺はまだ入っていません。図面ごとに上の縮尺を入れてください'));
   }
 };
 async function addFiles(fs, n) {
@@ -213,26 +223,30 @@ async function openDoc(fid) {
   return docs[fid];
 }
 
-/* 案件ファイルを読み込む */
-$('btnImport').onclick = () => { $('fImport').value = ''; $('fImport').click(); };
+/* 案件ファイル: 最初の画面の「読み込む」= いつも足す / 案件の ⋯ →「案件ファイルで置き換える」= その案件だけ置き換える */
+let importFor = null;
+$('btnImport').onclick = () => { importFor = null; $('fImport').value = ''; $('fImport').click(); };
 $('fImport').onchange = async e => {
   const f = e.target.files[0]; if (!f) return;
+  const target = importFor; importFor = null;
   busy(true);
   try {
     const o = await Store.parseImport(f);
-    const old = await Store.getProj(o.project.id);
-    let asNew = false;
-    if (old) {
-      const newer = (old.updatedAt || 0) > (o.project.updatedAt || 0);
-      busy(false);
-      const r = await dialog('同じ案件があります', `<p>「${esc(old.name)}」はこの端末にもあります。${newer ? '<br><b>この端末のほうが新しい</b>です。' : ''}</p>`,
-        [{ label: 'やめる', value: null }, { label: '別の案件として入れる', value: 'new' }, { label: '置き換える', cls: newer ? 'warn' : 'pri', value: 'rep' }]);
-      if (!r) return;
-      asNew = r === 'new';
-      busy(true);
+    if (target) {
+      if (o.project.id !== target.id) { busy(false); await dialog('置き換えられません', '<p>このファイルは「' + esc(o.project.name) + '」の案件ファイルで、「' + esc(target.name) + '」のものではありません。足すときは、最初の画面の「案件ファイルを読み込む」を使ってください。</p>', [{ label: '閉じる', cls: 'pri' }]); return; }
+      const cur = await Store.getProj(target.id);
+      if (cur && (cur.updatedAt || 0) > (o.project.updatedAt || 0)) {
+        busy(false);
+        if (!(await confirmDlg('この端末のほうが新しいです', '「' + target.name + '」は、この端末のほうが新しく直されています。それでも案件ファイルの内容で置き換えますか?', '置き換える', 'warn'))) return;
+        busy(true);
+      }
+      const p = await Store.saveImported(o, false);
+      note('「' + p.name + '」を、案件ファイルの内容に置き換えました');
+    } else {
+      const old = await Store.getProj(o.project.id);
+      const p = await Store.saveImported(o, !!old);
+      note(old ? 'この端末に同じ案件「' + old.name + '」があるので、別の案件として入れました。置き換えるときは、その案件の「⋯」→「案件ファイルで置き換える」' : '「' + p.name + '」を読み込みました');
     }
-    const p = await Store.saveImported(o, asNew);
-    toast('「' + p.name + '」を読み込みました');
     renderHome();
   } catch (err) { toast(err.message, 4000); }
   finally { busy(false); }
@@ -244,7 +258,7 @@ $('btnHomeMenu').onclick = () => dialog('拾い帳について', `
   ・拡大・縮小は指2本、移動は指1本でなぞる。<br>
   ・印をタップすると「消す」などが出ます。<br>
   ・見直し: 印を1つずつ順に見て OK を付けます。全部 OK になれば見落としなし。</p>
-  <p>データはこの端末の中だけに保存されます。控えと PC への受け渡しは「案件ファイル」で。</p>`, [{ label: '閉じる', cls: 'pri' }]);
+  <p>データはこの端末の中だけに保存されます。控えと PC への受け渡しは「案件ファイル」で。</p><p style="color:var(--ink2)">拾い帳 ${APP_VER}</p>`, [{ label: '閉じる', cls: 'pri' }]);
 
 /* ═════════ 図面 ═════════ */
 async function openProject(id) {
@@ -496,21 +510,29 @@ async function scaleTap(p) {
   if (S.scalePts.length < 2) { hint('縮尺: 2点目をタップ', 3000); return; }
   const [a, b] = S.scalePts; S.scalePts = []; redraw();
   const d = Math.hypot(b.x - a.x, b.y - a.y); if (d < 3) return;
-  const r = await dialog('縮尺を合わせる', '<label>この2点の間の実際の寸法(mm)</label><input id="dIn" type="number" inputmode="decimal">', [{ label: 'やめる', value: null }, ...scaleBtns()]);
-  const mm = r ? parseFloat(String(r.v || '').replace(/,/g, '')) : 0; if (!(mm > 0)) return;
-  const n = Math.round(mm / d / MM_PER_U * 100) / 100;
-  await applyScale(n, r.all);
+  const r = await dialog('この図面の縮尺を合わせる', '<p style="color:var(--ink2);font-size:13px">' + esc(pageName(P, P.cur)) + '</p><label>この2点の間の実際の寸法(mm)</label><input id="dIn" type="number" inputmode="decimal">',
+    [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: readNum }]);
+  if (!(r > 0)) return;
+  const n = Math.round(r / d / MM_PER_U * 100) / 100;
+  applyScale(n, false);
   setMode('pick');
 }
-/* 縮尺の窓のボタン: 図面が2枚以上なら「この図面だけ」「全部の図面」を、入力と同じ窓に出す(窓を2回出さない) */
-function scaleBtns() {
-  const rd = all => () => { const v = $('dIn').value; if (!(parseFloat(String(v).replace(/,/g, '')) > 0)) { toast('数字を入れてください'); return false; } return { v, all }; };
-  return P.pages.length > 1 ? [{ label: 'この図面だけ', cls: 'pri', read: rd(false) }, { label: '全部の図面', read: rd(true) }] : [{ label: 'OK', cls: 'pri', read: rd(false) }];
-}
-async function applyScale(n, all) {
+/* 縮尺の数字を読む(入っていなければ窓を閉じない) */
+function readNum() { const v = parseFloat(String($('dIn').value).replace(/,/g, '')); if (!(v > 0)) { toast('数字を入れてください'); return false; } return v; }
+/* all = false: 今の図面だけ(上の 1/100 ボタン・2点で合わせる) / true: 全部の図面(図面の一覧の上のボタン)。入口ごとに決まっている */
+function applyScale(n, all) {
   push();
-  (all ? P.pages : [curPage()]).forEach(pg => setScaleN(pg, n));
-  changed(); renderScaleLbl(); redraw(); renderItemBar(); toast('縮尺 1/' + n + ' にしました(拾った長さも計算し直し)');
+  const pgs = all ? P.pages : [curPage()], s = Math.round(n * 100) / 100;
+  pgs.forEach(pg => setScaleN(pg, n));
+  changed(); renderScaleLbl(); redraw(); renderItemBar();
+  note(all ? '全部の図面(' + pgs.length + '枚)の縮尺を 1/' + s + ' にしました。拾った長さも計算し直しました'
+           : '「' + pageName(P, P.cur) + '」の縮尺を 1/' + s + ' にしました(ほかの図面はそのまま)。拾った長さも計算し直しました');
+}
+async function scaleAll() {
+  const ns = [...new Set(P.pages.map(pg => scaleN(pg)).filter(Boolean).map(v => Math.round(v * 100) / 100))];
+  const r = await dialog('全部の図面の縮尺', '<p style="color:var(--ink2);font-size:13px">全部の図面(' + P.pages.length + '枚)を同じ縮尺にします。今の縮尺: ' + (ns.length ? ns.map(v => '1/' + v).join('、') : '未設定') + '</p><label>縮尺 1/○ の ○</label><input id="dIn" type="number" inputmode="decimal" placeholder="100">',
+    [{ label: 'やめる', value: null }, { label: '全部の図面に入れる', cls: 'pri', read: readNum }]);
+  if (r > 0) applyScale(r, true);
 }
 
 /* ── 工区をまたぐ線: どの工区に入れるか自分で選ぶ ── */
@@ -548,30 +570,27 @@ function markPop(o, e) {
   });
 }
 function zonePop(z, e, q) {
-  popAt(e, `<div class="pt">工区「${esc(z.name)}」</div><button data-a="mv">角を動かす</button><button data-a="draw">ここから新しい工区を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
+  const allPgs = () => [...P.pages, ...(P.trash || []).map(x => x.pg)];                 // 消した図面の中も合わせる
+  const sameN = allPgs().flatMap(q => q.zones).filter(q => q.name === z.name).length;
+  popAt(e, `<div class="pt">工区「${esc(z.name)}」</div><button data-a="mv">角を動かす</button><button data-a="draw">ここから新しい工区を描く</button><button data-a="ren">この範囲の名前を変える</button>${sameN > 1 ? `<button data-a="renAll">「${esc(z.name)}」をまとめて名前を変える(${sameN}か所)</button>` : ''}<button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
     mv: () => { S.zmove = { z, vi: null }; redraw(); hint('動かす角をタップ(終わるときは もう一度「工区」)', 4000); },
     draw: () => { S.zonePts = [q]; redraw(); },
-    ren: async () => {
-      const v = await askText('工区の名前', '新しい名前', z.name); if (!v || !v.trim() || v.trim() === z.name) return;
-      const nv = v.trim(), old = z.name, pg = curPage();
-      const pgs = [...P.pages, ...(P.trash || []).map(x => x.pg)];                 // 消した図面の中も合わせる
-      const same = pgs.flatMap(q => q.zones).filter(q => q.name === old);
-      let all = false;
-      if (same.length > 1) {
-        const r = await dialog('工区の名前を変える', '<p>「' + esc(old) + '」は、ほかにも ' + (same.length - 1) + 'か所あります(同じ工区として数えています)。</p>',
-          [{ label: 'この範囲だけ', value: 'one' }, { label: 'やめる', value: null }, { label: '全部変える', cls: 'pri', value: 'all' }]);
-        if (r !== 'one' && r !== 'all') return; all = r === 'all';
-      }
-      push();
-      const ex = pgs.flatMap(q => q.zones).find(q => q.name === nv);              // 入れる先の名前がもうあれば、その色にそろえる
-      if (all) {
-        same.forEach(q => { q.name = nv; if (ex) q.color = ex.color; });
-        pgs.forEach(q => q.lens.forEach(l => { if (l.zn === old) l.zn = nv; }));   // 選んであった工区も新しい名前に
-      } else {
-        z.name = nv; if (ex) z.color = ex.color;
-        if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) l.zn = nv; });
-      }
-      changed(); redraw(); toast('工区の名前を「' + nv + '」にしました');
+    ren: async () => {      // この範囲だけ
+      const v = await askText('この範囲の工区の名前', 'ほかの同じ名前の工区はそのまま', z.name); if (!v || !v.trim() || v.trim() === z.name) return;
+      const nv = v.trim(), old = z.name, pg = curPage(); push();
+      const ex = allPgs().flatMap(q => q.zones).find(q => q.name === nv && q !== z); z.name = nv; if (ex) z.color = ex.color;
+      let moved = 0; if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) { l.zn = nv; moved++; } });
+      changed(); redraw();
+      note('この範囲の工区を「' + old + '」から「' + nv + '」にしました' + (sameN > 1 ? '(ほかの「' + old + '」' + (sameN - 1) + 'か所はそのまま)' : '') + (ex ? '。「' + nv + '」と同じ工区として数えます' : '') + (moved ? '。この図面で「' + old + '」を選んでいた線 ' + moved + '本も「' + nv + '」にしました' : ''));
+    },
+    renAll: async () => {   // 同じ名前をまとめて
+      const v = await askText('「' + z.name + '」をまとめて名前を変える', '同じ名前の工区 ' + sameN + 'か所が全部変わります', z.name); if (!v || !v.trim() || v.trim() === z.name) return;
+      const nv = v.trim(), old = z.name, pgs = allPgs(); push();
+      const same = pgs.flatMap(q => q.zones).filter(q => q.name === old), ex = pgs.flatMap(q => q.zones).find(q => q.name === nv);
+      same.forEach(q => { q.name = nv; if (ex) q.color = ex.color; });
+      let moved = 0; pgs.forEach(q => q.lens.forEach(l => { if (l.zn === old) { l.zn = nv; moved++; } }));
+      changed(); redraw();
+      note('工区「' + old + '」' + same.length + 'か所を、まとめて「' + nv + '」にしました' + (moved ? '(選んであった線 ' + moved + '本も)' : '') + (ex ? '。もとからあった「' + nv + '」と同じ工区として数えます' : ''));
     },
     del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); { const zi = pg.zones.indexOf(z); if (zi < 0) return; pg.zones.splice(zi, 1); }
       if (!pg.zones.some(q => q.name === z.name)) pg.lens.forEach(l => { if (l.zn === z.name) delete l.zn; });   // 選んであった工区が無くなったら「未定」に戻す
@@ -616,16 +635,18 @@ async function addSec(a, b) {
   const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
   pg.secs.push({ id: nextId(P), name: nm.trim(), pts: [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }] });
   const was = pg.zp; pg.zp = true;
-  changed(); redraw(); toast('伏図「' + nm.trim() + '」を追加しました' + (was ? '' : '(この図面を書き出しに入れました)'), 3500);
+  changed(); redraw(); if (was) toast('伏図「' + nm.trim() + '」を追加しました'); else note('伏図「' + nm.trim() + '」を追加しました。この図面を書き出し(Excel・PDF・工区毎P算出)に入れました');
 }
 function zonesIn(sc, pg) { return pg.zones.filter(z => { const c = polyC(z.pts); return pip(sc.pts, c.x, c.y); }); }
 function secPop(sc, e, q) {
   const pg = curPage(), nz = zonesIn(sc, pg).length;
-  popAt(e, `<div class="pt">伏図「${esc(sc.name)}」 工区 ${nz}</div><button data-a="cp">この工区をほかの伏図に写す</button><button data-a="draw">ここから新しい範囲を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
-    cp: () => {
-      if (secsOf(pg).length < 2) { hint('写す先の伏図がありません。先に「伏図」で、この図面の別の階(3F など)の範囲も囲んでください', 6000); return; }
-      if (!nz) { hint('「' + sc.name + '」の中に工区がありません。先に「工区」で、この範囲の中に工区を描いてください', 6000); return; }
-      startZcopy(sc); },
+  const cpGo = mode => {
+    if (secsOf(pg).length < 2) { hint('写す先の伏図がありません。先に「伏図」で、この図面の別の階(3F など)の範囲も囲んでください', 6000); return; }
+    if (!nz) { hint('「' + sc.name + '」の中に工区がありません。先に「工区」で、この範囲の中に工区を描いてください', 6000); return; }
+    startZcopy(sc, mode);
+  };
+  popAt(e, `<div class="pt">伏図「${esc(sc.name)}」 工区 ${nz}</div><button data-a="cp">工区をほかの伏図に写す(写す先に足す)</button><button data-a="cpRep">工区をほかの伏図に写す(写す先の工区と入れ替える)</button><button data-a="draw">ここから新しい範囲を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
+    cp: () => cpGo('add'), cpRep: () => cpGo('rep'),
     draw: () => { S.secPts = [q]; redraw(); hint('伏図: 範囲の反対の角をタップ', 3000); },
     ren: async () => { const v = await askText('伏図の名前', '新しい名前', sc.name); if (v && v.trim()) { push(); sc.name = v.trim(); changed(); redraw(); } },
     del: async () => { if (await confirmDlg('伏図の範囲を消す', '伏図「' + sc.name + '」の範囲を消します(中の工区と拾った印は残ります)。', '消す', 'warn')) { push(); { const si = pg.secs.indexOf(sc); if (si < 0) return; pg.secs.splice(si, 1); } changed(); redraw(); } },
@@ -633,12 +654,12 @@ function secPop(sc, e, q) {
   });
 }
 /* 工区を写す: 写す先を選ぶ → 写す元で基準点 → 写す先で同じ点 */
-async function startZcopy(src) {
+async function startZcopy(src, mode) {
   const pg = curPage(), others = secsOf(pg).filter(s => s !== src);
-  const dst = others.length === 1 ? others[0] : await dialog('どの伏図に写しますか', '<p>「' + esc(src.name) + '」の工区 ' + zonesIn(src, pg).length + '個を写します。</p>',
+  const dst = others.length === 1 ? others[0] : await dialog('どの伏図に写しますか', '<p>「' + esc(src.name) + '」の工区 ' + zonesIn(src, pg).length + '個を' + (mode === 'rep' ? '、写す先の工区と入れ替えて' : '、写す先に足して') + '写します。</p>',
     [...others.map(s => ({ label: s.name, value: s })), { label: 'やめる', value: null }]);
   if (!dst || dst === true) return;
-  S.mode = 'zcopy'; S.zc = { src, dst, a: null }; redraw();
+  S.mode = 'zcopy'; S.zc = { src, dst, a: null, mode }; redraw();
   hint('写す元「' + src.name + '」で、基準にする点(通り芯の交点など)をタップ', 6000);
 }
 async function zcopyTap(p) {
@@ -649,18 +670,12 @@ async function zcopyTap(p) {
   }
   if (!pip(zc.dst.pts, p.x, p.y)) { hint('写す先「' + zc.dst.name + '」の中をタップしてください', 3000); return; }
   const dx = p.x - zc.a.x, dy = p.y - zc.a.y, from = zonesIn(zc.src, pg), old = zonesIn(zc.dst, pg);
-  let replace = false;
-  if (old.length) {
-    const r = await dialog('写す先にも工区があります', '<p>「' + esc(zc.dst.name) + '」にはもう工区が ' + old.length + '個あります。</p>',
-      [{ label: '消して写す', cls: 'warn', value: 'rep' }, { label: '足して写す', value: 'add' }, { label: 'やめる', value: null }]);
-    if (!r || r === true) { S.zc = null; setMode('sec'); return; }
-    replace = r === 'rep';
-  }
+  const replace = zc.mode === 'rep';   // 足すか入れ替えるかは、入口(伏図のメニュー)で決まっている
   push();
   if (replace) pg.zones = pg.zones.filter(z => !old.includes(z));
   from.forEach(z => pg.zones.push({ id: nextId(P), name: z.name, color: z.color, pts: z.pts.map(v => ({ x: v.x + dx, y: v.y + dy })) }));
   changed(); const dn = zc.dst.name; S.zc = null; setMode('sec');
-  toast('「' + dn + '」に工区を ' + from.length + '個写しました。違う所は「工区」で角を動かすか、消して描き直してください', 6000);
+  note('「' + dn + '」に工区を ' + from.length + '個写しました' + (replace ? (old.length ? '(もとの工区 ' + old.length + '個は消しました)' : '') : (old.length ? '(もとからあった ' + old.length + '個も残っています)' : '')) + '。違う所は「工区」で角を動かすか、消して描き直してください');
 }
 
 /* ── モード ── */
@@ -668,7 +683,7 @@ const MODE_HINT = {
   pick: '拾い: 個はタップ、m・部材は始点と終点をタップ。長押しで拡大して合わせる',
   zone: '工区: 角を順にタップ。最初の点をタップで閉じる。工区をタップで角を動かす・名前・消す',
   sec: '伏図: 1枚に 2F・3F… と並んでいるとき、範囲の対角の2点をタップして名前を付ける。範囲をタップで「工区をほかの伏図に写す」',
-  scale: '縮尺: 寸法の分かっている2点をタップ(通り芯など)',
+  scale: 'この図面の縮尺: 寸法の分かっている2点をタップ(通り芯など)',
   review: '見直し: 印を1つずつ見て「OK」。全部 OK になれば見落としなし',
   view: '移動: 図面を見るだけ(タップしても拾わない)'
 };
@@ -769,7 +784,7 @@ function openSheet(title, render, searchable) {
 function closeSheet() { $('sheetBg').classList.add('hidden'); $('bsheet').classList.add('hidden'); }
 $('sheetBg').onclick = closeSheet; $('bsClose').onclick = closeSheet;
 
-/* 「拾った部材だけ / 全部の部材」の切り替え(案件ごとに覚える。台帳・部材を選ぶ・Excel で共通) */
+/* 「拾った部材だけ / 全部の部材」の切り替え(画面だけ: 台帳・部材を選ぶ。Excel は「書き出し」で別に選ぶ) */
 function usedTg() {
   const n = P.items.length, u = P.items.filter(it => agg().T[it.id].n).length;
   return `<div class="seg mini usedTg"><button data-u="1" class="${P.onlyUsed ? 'on' : ''}">拾った部材だけ(${u})</button><button data-u="0" class="${P.onlyUsed ? '' : 'on'}">全部の部材(${n})</button></div>`;
@@ -806,10 +821,12 @@ function openPageSheet() {
       return `<div class="row${i === P.cur ? ' cur' : ''}" data-i="${i}"><span class="nm">${esc(pageName(P, i))}</span>
         <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span></div>`;
     }).join('');
-    $('bsBody').innerHTML = `<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
+    $('bsBody').innerHTML = `${P.pages.length ? `<div class="add"><button id="bsScaleAll">全部の図面の縮尺を変える(${P.pages.length}枚)</button></div>` : ''}<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
       ${curPage() ? `<div class="add"><button id="bsZp">${curPage().zp ? '☑ 書き出しに入れている(押すと外す)' : '☐ 書き出しに入れる'}</button><button id="bsDelPg" style="color:var(--warn)">図面を消す(選んで)</button></div>` : ''}
-      ${(P.trash || []).length ? `<div class="add"><button id="bsTrash">消した図面を戻す(${P.trash.length}枚)</button></div>` : ''}`;
+      ${(P.trash || []).length ? `<div class="add"><button id="bsTrash">消した図面を戻す(${P.trash.length}枚)</button><button id="bsPurge" style="color:var(--warn)">消した図面を完全に消す</button></div>` : ''}`;
+    if ($('bsScaleAll')) $('bsScaleAll').onclick = () => { closeSheet(); scaleAll(); };
     if ($('bsTrash')) $('bsTrash').onclick = () => { closeSheet(); restorePages(); };
+    if ($('bsPurge')) $('bsPurge').onclick = () => { closeSheet(); purgePages(); };
     if ($('bsZp')) $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を書き出しに' + (pg.zp ? '入れます' : '入れません')); };
     if ($('bsDelPg')) $('bsDelPg').onclick = () => { closeSheet(); deletePages(); };
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); gotoPage(+r.dataset.i, true); });
@@ -831,33 +848,42 @@ async function deletePages() {
   const keep = [], curId = curPage() && curPage().id; let n = 0;
   list.forEach((x, i) => { if (r[i]) { P.trash.push({ pg: x.pg, nm: x.nm, at: i, t: Date.now() }); n++; } else keep.push(x.pg); });
   P.pages = keep; changed(); await saveNow();
-  toast(n + '枚の図面を消しました(「消した図面を戻す」で戻せます)', 3500);
+  note(list.filter((x, i) => r[i]).map(x => x.nm).join('、') + ' を消しました(' + n + '枚)。上の図面の名前 →「消した図面を戻す」で戻せます');
   let ni = P.pages.findIndex(q => q.id === curId); if (ni < 0) ni = Math.min(P.cur, P.pages.length - 1);
   P.cur = -1; if (ni >= 0) await gotoPage(ni, true); else showNoPage();
   if (S.mode === 'review') startReview();
 }
+function trashList(T) { return T.map(x => ({ nm: x.nm, sub: '印 ' + (x.pg.dots.length + x.pg.lens.length) + ' ・ ' + new Date(x.t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' に消した' })); }
+/* 完全に消す(戻すとは別の入口)。最初はどれにもチェックを入れない */
+async function purgePages() {
+  const T = P.trash || []; if (!T.length) return;
+  const list = trashList(T);
+  const sel = await dialog('消した図面を完全に消す', '<p style="font-size:13px;color:var(--ink2)">完全に消す図面にチェックを入れてください。拾った印も消え、二度と戻せません。</p>' + pageChecks(list, () => false),
+    [{ label: 'やめる', value: null }, { label: '完全に消す', cls: 'warn', read: () => { const v = list.map((x, i) => $('pc' + i).checked); if (!v.some(Boolean)) { toast('完全に消す図面にチェックを入れてください'); return false; } return v; } }]);
+  if (!Array.isArray(sel)) return;
+  const n = sel.filter(Boolean).length, names = T.filter((x, i) => sel[i]).map(x => x.nm);
+  if (!(await confirmDlg('完全に消す', names.join('、') + '(' + n + '枚)を完全に消します。元に戻せません。', '完全に消す', 'warn'))) return;
+  P.trash = T.filter((x, i) => !sel[i]);
+  const used = new Set([...P.pages, ...P.trash.map(x => x.pg)].map(q => q.file));
+  P.files.filter(f => !used.has(f.id)).forEach(f => { Store.delFile(P.id, f.id); delete docs[f.id]; });
+  P.files = P.files.filter(f => used.has(f.id));
+  hist.length = 0; changed(); await saveNow();
+  note(names.join('、') + ' を完全に消しました(' + n + '枚)。「元に戻す」の履歴もリセットされました');
+}
 async function restorePages() {
   const T = P.trash || []; if (!T.length) return;
-  const list = T.map(x => ({ nm: x.nm, sub: '印 ' + (x.pg.dots.length + x.pg.lens.length) + ' ・ ' + new Date(x.t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' に消した' }));
-  const r = await dialog('消した図面を戻す', '<p style="font-size:13px;color:var(--ink2)">戻す図面にチェックを入れてください。「完全に消す」を押すと、チェックした図面は二度と戻せません。</p>' + pageChecks(list, () => true),
-    [{ label: '完全に消す', cls: 'warn', read: () => ({ a: 'del', sel: list.map((x, i) => $('pc' + i).checked) }) }, { label: 'やめる', value: null },
-     { label: '戻す', cls: 'pri', read: () => ({ a: 'back', sel: list.map((x, i) => $('pc' + i).checked) }) }]);
-  if (!r || !r.sel || !r.sel.some(Boolean)) return;
-  if (r.a === 'del') {
-    const n = r.sel.filter(Boolean).length;
-    if (!(await confirmDlg('完全に消す', 'チェックした図面 ' + n + '枚を完全に消します。拾った印も消え、元に戻せません。', '完全に消す', 'warn'))) return;
-    P.trash = T.filter((x, i) => !r.sel[i]);
-    const used = new Set([...P.pages, ...P.trash.map(x => x.pg)].map(q => q.file));
-    P.files.filter(f => !used.has(f.id)).forEach(f => { Store.delFile(P.id, f.id); delete docs[f.id]; });
-    P.files = P.files.filter(f => used.has(f.id));
-    hist.length = 0; changed(); await saveNow(); toast(n + '枚を完全に消しました'); return;
-  }
+  const list = trashList(T);
+  const sel = await dialog('消した図面を戻す', '<p style="font-size:13px;color:var(--ink2)">戻す図面にチェックを入れてください。拾った印ごと戻ります。</p>' + pageChecks(list, () => true),
+    [{ label: 'やめる', value: null }, { label: '戻す', cls: 'pri', read: () => { const v = list.map((x, i) => $('pc' + i).checked); if (!v.some(Boolean)) { toast('戻す図面にチェックを入れてください'); return false; } return v; } }]);
+  if (!Array.isArray(sel)) return;
+  const r = { sel };
   push();
   const back = T.filter((x, i) => r.sel[i]).sort((a, b) => a.at - b.at);
   P.trash = T.filter((x, i) => !r.sel[i]);
   back.forEach(x => P.pages.push(x.pg)); P.pages.sort((a, b) => a.id - b.id);   // 元の並び順(図面は入れた順に番号が付いている)
   changed(); await saveNow();
   const ni = P.pages.indexOf(back[0].pg); P.cur = -1; await gotoPage(ni, true);
+  note(back.map(x => x.nm).join('、') + ' を戻しました(' + back.length + '枚)');
   toast(back.length + '枚の図面を戻しました');
 }
 
@@ -893,12 +919,11 @@ function grpHead(it, prev) { return it.grp && (!prev || prev.grp !== it.grp) ? `
 $('btnScale').onclick = async () => {
   if (!curPage()) { toast('先に図面を入れてください'); return; }
   const n = scaleN(curPage());
-  const r = await dialog('縮尺', `<label>縮尺 1/○ の ○</label><input id="dIn" type="number" inputmode="decimal" value="${n ? Math.round(n * 100) / 100 : ''}" placeholder="100">
-    <p style="margin-top:10px;color:var(--ink2);font-size:13px">分からないときは「2点で合わせる」で、寸法の分かっている2点(通り芯など)をタップします。</p>`,
-    [{ label: '2点で合わせる', value: 'two' }, { label: 'やめる', value: null }, ...scaleBtns()]);
+  const r = await dialog('この図面の縮尺', `<p style="color:var(--ink2);font-size:13px">${esc(pageName(P, P.cur))}</p><label>縮尺 1/○ の ○</label><input id="dIn" type="number" inputmode="decimal" value="${n ? Math.round(n * 100) / 100 : ''}" placeholder="100">
+    <p style="margin-top:10px;color:var(--ink2);font-size:13px">分からないときは「2点で合わせる」で、寸法の分かっている2点(通り芯など)をタップします。全部の図面をまとめて変えるときは、上の図面の名前 →「全部の図面の縮尺を変える」。</p>`,
+    [{ label: '2点で合わせる', value: 'two' }, { label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: readNum }]);
   if (r === 'two') { setMode('scale'); return; }
-  if (!r || typeof r !== 'object') return;
-  const v = parseFloat(String(r.v).replace(/,/g, '')); if (v > 0) await applyScale(v, r.all);
+  if (r > 0) applyScale(r, false);
 };
 $('btnUndo').onclick = undo;
 $('btnBack').onclick = async () => { await saveNow(); P = null; renderHome(); };
@@ -969,6 +994,7 @@ function renderLedger() {
     const nzp = P.pages.filter(q => q.zp).length;
     body.innerHTML = kpi + `<div class="sec"><h3>書き出す図面(Excel・PDF)</h3><p>${nzp ? nzp + '枚 / ' + P.pages.length + '枚(選んだ図面だけ。伏図を囲んだ図面は、その範囲の中だけ)' : '<b style="color:var(--warn)">まだ選んでいません</b>'}
       <button class="chip" id="expPick" style="margin-left:6px">図面を選ぶ</button></p>
+      <p>Excel に入れる部材 <span class="seg mini" id="xlTg" style="display:inline-flex;vertical-align:middle;margin-left:6px"><button data-x="0" class="${P.xlOnlyUsed ? '' : 'on'}">全部の部材</button><button data-x="1" class="${P.xlOnlyUsed ? 'on' : ''}">拾った部材だけ</button></span></p>
       <p style="font-size:12.5px">Excel = 部材・集計・吊材積算・手付積算・工区毎P算出の表 / PDF = 拾った印を描いた図面と、その次のページに部材の表 / 案件ファイル = 図面と拾った印の控え(全部の図面)</p></div>
       <div class="expBox"><h3>PC に保存</h3><p>押すと、そのままダウンロードフォルダに入ります。</p>
         <div class="expBtns"><button class="big" data-f="x" data-h="pc">Excel</button><button class="big ghost" data-f="pdf" data-h="pc">PDF</button><button class="big ghost" data-f="p" data-h="pc">案件ファイル</button></div></div>
@@ -976,6 +1002,8 @@ function renderLedger() {
         <div class="expBtns"><button class="big" data-f="x" data-h="ios">Excel</button><button class="big ghost" data-f="pdf" data-h="ios">PDF</button><button class="big ghost" data-f="p" data-h="ios">案件ファイル</button></div></div>
       <p class="note">拾い帳 ${APP_VER}</p>`;
     $('expPick').onclick = async () => { if (await pickZpPages()) renderLedger(); };
+    $('xlTg').querySelectorAll('button').forEach(b => b.onclick = () => { const v = b.dataset.x === '1'; if (!!P.xlOnlyUsed === v) return;
+      if (v) P.xlOnlyUsed = true; else delete P.xlOnlyUsed; changed(true); renderLedger(); toast('Excel に入れる部材: ' + (v ? '拾った部材だけ' : '全部の部材')); });
     body.querySelectorAll('.expBtns button').forEach(b => b.onclick = () => doExport(b.dataset.f, b.dataset.h));
   }
 }
@@ -1132,5 +1160,6 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'ArrowLeft' && S.mode !== 'review') stepItem(-1);
 });
 
+if ($('verLbl')) $('verLbl').textContent = APP_VER;   // 最初の画面の「拾い帳」の横に版の番号
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 renderHome();

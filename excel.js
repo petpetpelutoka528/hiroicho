@@ -50,7 +50,7 @@ const Excel = (() => {
       const hd = ['No', '色', '部材名', '種類', '単重', '', 'ボルト', '柱/G/B/他', '数', '', '長さm', '吊', '手付', '重量kg'];
       hd.forEach((h, i) => { const x = ws.getCell(5, i + 1); x.value = h; x.font = f9(); x.border = { bottom: DOT }; x.alignment = { horizontal: i === 2 ? 'left' : 'center' }; });
       let r = 6;
-      shownItems(P, A).forEach((it, i) => {
+      xlItems(P, A).forEach((it, i) => {
         const T = A.T[it.id];
         const v = [i + 1, '', it.name, KIND[it.kind].lbl, it.w || null, KIND[it.kind].wLbl, it.bolt || null, catOf(it),
           it.kind === 'm' ? (T.mm ? Math.round(T.mm / 10) / 100 : null) : (T.n || null), KIND[it.kind].unit,
@@ -74,7 +74,7 @@ const Excel = (() => {
       const top = 3;
       head.forEach((h, i) => { const x = ws.getCell(top, i + 1); x.value = h; x.font = f9(); x.alignment = { horizontal: i ? 'right' : 'left' }; });
       let r = top + 1;
-      const L = shownItems(P, A);
+      const L = xlItems(P, A);
       L.forEach(it => {
         const T = A.T[it.id];
         ws.getCell(r, 1).value = it.name;

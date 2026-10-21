@@ -59,7 +59,7 @@ const Store = (() => {
     const old = asNew ? null : await api.getProj(P.id);
     if (asNew) { const old = P.id; P.id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); P.name = P.name + '(コピー)'; }
     for (const f of o.files || []) await api.putFile(P.id, f.id, { type: f.type, data: unb64(f.data) });
-    P.updatedAt = Date.now();
+    P.updatedAt = asNew ? Date.now() : (P.updatedAt || Date.now());   // 案件ファイルの最終更新をそのまま残す(新しい・古いの比べに使う)
     await api.putProj(P);
     if (old) for (const f of old.files || []) if (!(P.files || []).some(g => g.id === f.id)) await api.delFile(P.id, f.id).catch(() => {});   // 置き換えで使わなくなった図面
     return P;
