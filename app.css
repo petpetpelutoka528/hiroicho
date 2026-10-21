@@ -187,3 +187,6 @@ table.zt td,table.zt th{padding:5px 6px}
 .expBox p{font-size:12.5px;color:var(--ink2);margin:0 0 8px}
 .expBtns{display:flex;gap:8px}
 .expBtns .big{flex:1;min-width:0;margin:0;padding:0 6px;font-size:15px}
+/* 拾った部材だけ / 全部の部材 */
+.seg.mini.usedTg{padding:0 10px 8px}
+.sec .seg.mini.usedTg{padding:4px 0 0}

@@ -40,10 +40,13 @@ const Store = (() => {
   }
   function unb64(s) { const b = atob(s), u = new Uint8Array(b.length); for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i); return u.buffer; }
   api.exportProj = async P => {
-    const files = [];
-    for (const f of P.files) { const v = await api.getFile(P.id, f.id); if (v) files.push({ id: f.id, type: v.type, data: b64(v.data) }); }
-    const body = JSON.stringify({ format: 'hiroicho', ver: 1, exportedAt: Date.now(), project: P, files });
-    return new Blob([body], { type: 'application/json' });
+    // 図面1つずつ Blob にして、大きな文字列を一度に作らない(iPhone のメモリ対策)
+    const parts = [new Blob(['{"format":"hiroicho","ver":1,"exportedAt":' + Date.now() + ',"project":' + JSON.stringify(P) + ',"files":['])];
+    let first = true;
+    for (const f of P.files) { const v = await api.getFile(P.id, f.id); if (!v) continue;
+      parts.push(new Blob([(first ? '' : ',') + JSON.stringify({ id: f.id, type: v.type, data: b64(v.data) })])); first = false; }
+    parts.push(new Blob([']}']));
+    return new Blob(parts, { type: 'application/json' });
   };
   api.parseImport = async file => {
     const txt = await file.text(); let o;
@@ -53,10 +56,12 @@ const Store = (() => {
   };
   api.saveImported = async (o, asNew) => {
     const P = o.project;
+    const old = asNew ? null : await api.getProj(P.id);
     if (asNew) { const old = P.id; P.id = 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); P.name = P.name + '(コピー)'; }
     for (const f of o.files || []) await api.putFile(P.id, f.id, { type: f.type, data: unb64(f.data) });
     P.updatedAt = Date.now();
     await api.putProj(P);
+    if (old) for (const f of old.files || []) if (!(P.files || []).some(g => g.id === f.id)) await api.delFile(P.id, f.id).catch(() => {});   // 置き換えで使わなくなった図面
     return P;
   };
   api.persist = async () => { try { if (navigator.storage && navigator.storage.persist) return await navigator.storage.persist(); } catch (e) {} return false; };

@@ -34,6 +34,7 @@ function itemOf(P, id) { return P.items.find(i => i.id === id); }
 function catOf(it) {
   if (it.cat) return it.cat;
   const c = String(it.name || '').toUpperCase();
+  if (c.includes('柱')) return '柱';
   return c.includes('G') ? 'G' : c.includes('B') ? 'B' : '他';
 }
 function scaleN(pg) { return pg && pg.scale ? pg.scale / MM_PER_U : 0; }          // 縮尺 1/N の N
@@ -155,6 +156,8 @@ function zoneTable(P, A, mode) {
   const get = (b, z, c) => V[b + '|' + z + '|' + c] || 0;
   return { blocks, zones, get };
 }
+/* 表示する部材: 「拾った部材だけ」(P.onlyUsed)なら数量のある部材だけ。keepId の部材(選んでいる部材)は残す */
+function shownItems(P, A, keepId) { return P.onlyUsed ? P.items.filter(it => (A.T[it.id] && A.T[it.id].n) || it.id === keepId) : P.items; }
 function qtyTxt(it, c) { if (!c || !c.n) return ''; return it.kind === 'm' ? (c.mm / 1000).toFixed(2) : String(c.n); }
 function totals(P, A) {
   let pcs = 0, sl = 0, hd = 0, mem = 0, len = 0, kg = 0, n = 0, rv = 0;

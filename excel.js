@@ -50,7 +50,7 @@ const Excel = (() => {
       const hd = ['No', '色', '部材名', '種類', '単重', '', 'ボルト', '柱/G/B/他', '数', '', '長さm', '吊', '手付', '重量kg'];
       hd.forEach((h, i) => { const x = ws.getCell(5, i + 1); x.value = h; x.font = f9(); x.border = { bottom: DOT }; x.alignment = { horizontal: i === 2 ? 'left' : 'center' }; });
       let r = 6;
-      P.items.forEach((it, i) => {
+      shownItems(P, A).forEach((it, i) => {
         const T = A.T[it.id];
         const v = [i + 1, '', it.name, KIND[it.kind].lbl, it.w || null, KIND[it.kind].wLbl, it.bolt || null, catOf(it),
           it.kind === 'm' ? (T.mm ? Math.round(T.mm / 10) / 100 : null) : (T.n || null), KIND[it.kind].unit,
@@ -74,7 +74,8 @@ const Excel = (() => {
       const top = 3;
       head.forEach((h, i) => { const x = ws.getCell(top, i + 1); x.value = h; x.font = f9(); x.alignment = { horizontal: i ? 'right' : 'left' }; });
       let r = top + 1;
-      P.items.forEach(it => {
+      const L = shownItems(P, A);
+      L.forEach(it => {
         const T = A.T[it.id];
         ws.getCell(r, 1).value = it.name;
         cols.forEach((c, j) => { const q = qtyTxt(it, A.M[it.id][c]); if (q) ws.getCell(r, 2 + j).value = +q; });
@@ -105,12 +106,12 @@ const Excel = (() => {
       ws.getCell(top, c0).value = '部材';
       P.pages.forEach((pg, i) => ws.getCell(top, c0 + 1 + i).value = pageName(P, i));
       ws.getCell(top, c0 + 1 + np).value = '計';
-      P.items.forEach((it, k) => {
+      L.forEach((it, k) => {
         const rr = top + 1 + k; ws.getCell(rr, c0).value = it.name;
         P.pages.forEach((pg, i) => { const q = qtyTxt(it, A.PG[it.id][i]); if (q) ws.getCell(rr, c0 + 1 + i).value = +q; });
         const q = qtyTxt(it, A.T[it.id]); if (q) ws.getCell(rr, c0 + 1 + np).value = +q;
       });
-      const lastR = top + P.items.length;
+      const lastR = top + L.length;
       for (let rr = top; rr <= lastR; rr++) for (let c = c0; c <= c0 + 1 + np; c++) {
         const x = ws.getCell(rr, c); x.font = f9({ bold: c === c0 + 1 + np }); x.alignment = { horizontal: c === c0 ? 'left' : 'right' };
         if (c > c0) x.numFmt = NUM; x.border = { top: rr === top ? DOT : undefined, bottom: rr === lastR ? THICK : DOT };

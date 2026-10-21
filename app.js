@@ -46,12 +46,15 @@ function stale() { A = null; }
 function agg() { return A || (A = aggregate(P)); }
 
 /* 入力の窓 */
+let dlgCancel = null;          // Esc で窓を閉じる(やめる と同じ)
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && dlgCancel && !$('dlgBg').classList.contains('hidden')) { e.preventDefault(); e.stopImmediatePropagation(); dlgCancel(); } }, true);
 function dialog(title, html, buttons) {
   return new Promise(res => {
+    dlgCancel = () => { dlgCancel = null; $('dlgBg').classList.add('hidden'); res(null); };
     $('dlgTitle').textContent = title; $('dlgBody').innerHTML = html;
     const bb = $('dlgBtns'); bb.innerHTML = '';
     buttons.forEach(b => { const e = document.createElement('button'); e.textContent = b.label; if (b.cls) e.className = b.cls;
-      e.onclick = () => { const v = b.value !== undefined ? b.value : true; const out = b.read ? b.read() : v; if (out === false) return; $('dlgBg').classList.add('hidden'); res(out); };
+      e.onclick = () => { const v = b.value !== undefined ? b.value : true; const out = b.read ? b.read() : v; if (b.read && out === false) return; /* read() が false = 入力が足りないので閉じない */ dlgCancel = null; $('dlgBg').classList.add('hidden'); res(out); };
       bb.appendChild(e); });
     $('dlgBg').classList.remove('hidden');
     const f = $('dlgBody').querySelector('input,textarea'); if (f) setTimeout(() => { f.focus(); if (f.select) f.select(); }, 60);
@@ -62,7 +65,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v16';
+const APP_VER = 'v20';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -97,7 +100,11 @@ async function saveNow() { clearTimeout(saveT); saveT = null; if (P) try { await
 function undo() {
   const h = hist.pop(); if (!h) { toast('戻せるものがありません'); return; }
   const pid = curPage() && curPage().id;
+  const before = P.files.map(f => f.id);
   const o = JSON.parse(h); Object.assign(P, o);
+  const gone = before.filter(id => !P.files.some(f => f.id === id));   // 「図面を追加」を戻したとき
+  if (gone.length) { const pid0 = P.id; gone.forEach(id => delete docs[id]);
+    saveNow().then(() => Promise.all(gone.map(id => Store.delFile(pid0, id).catch(() => {})))); }
   S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') { S.zc = null; S.mode = 'sec'; } hidePop();
   let i = P.pages.findIndex(q => q.id === pid);          // 見ていた図面のまま
   changed();
@@ -177,6 +184,10 @@ async function addFiles(fs, n) {
       } else {
         const img = await openDoc(fid);
         const paper = await askPaper(f.name, img.naturalWidth, img.naturalHeight);
+        if (!(paper > 0)) {   // 用紙を選ばずに閉じた → この画像は入れない
+          P.files.pop(); delete docs[fid]; await Store.delFile(P.id, fid).catch(() => {});
+          toast(f.name + ' は入れませんでした(用紙の大きさが選ばれていません)', 3500); continue;
+        }
         const pg = { id: nextId(P), file: fid, p: 0, name: '', scale: 0, w: 0, h: 0, paper, dots: [], lens: [], zones: [] };
         if (n) setScaleN(pg, n); P.pages.push(pg);
       }
@@ -493,7 +504,11 @@ async function scaleTap(p) {
 }
 async function applyScale(n) {
   let all = false;
-  if (P.pages.length > 1) all = await dialog('縮尺 1/' + n, '<p>どの図面に使いますか?</p>', [{ label: 'この図面だけ', value: false }, { label: '全部の図面', cls: 'pri', value: true }]);
+  if (P.pages.length > 1) {
+    const r = await dialog('縮尺 1/' + n, '<p>どの図面に使いますか?</p>', [{ label: 'この図面だけ', value: 'one' }, { label: '全部の図面', cls: 'pri', value: 'all' }]);
+    if (r !== 'one' && r !== 'all') return;
+    all = r === 'all';
+  }
   push();
   (all ? P.pages : [curPage()]).forEach(pg => setScaleN(pg, n));
   changed(); renderScaleLbl(); redraw(); renderItemBar(); toast('縮尺 1/' + n + ' にしました(拾った長さも計算し直し)');
@@ -537,9 +552,28 @@ function zonePop(z, e, q) {
   popAt(e, `<div class="pt">工区「${esc(z.name)}」</div><button data-a="mv">角を動かす</button><button data-a="draw">ここから新しい工区を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
     mv: () => { S.zmove = { z, vi: null }; redraw(); hint('動かす角をタップ(終わるときは もう一度「工区」)', 4000); },
     draw: () => { S.zonePts = [q]; redraw(); },
-    ren: async () => { const v = await askText('工区の名前', '新しい名前', z.name); if (v && v.trim()) { push(); const pg = curPage(), old = z.name; z.name = v.trim();
-      if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) l.zn = z.name; });   // 選んであった工区も新しい名前に
-      changed(); redraw(); } },
+    ren: async () => {
+      const v = await askText('工区の名前', '新しい名前', z.name); if (!v || !v.trim() || v.trim() === z.name) return;
+      const nv = v.trim(), old = z.name, pg = curPage();
+      const pgs = [...P.pages, ...(P.trash || []).map(x => x.pg)];                 // 消した図面の中も合わせる
+      const same = pgs.flatMap(q => q.zones).filter(q => q.name === old);
+      let all = false;
+      if (same.length > 1) {
+        const r = await dialog('工区の名前を変える', '<p>「' + esc(old) + '」は、ほかにも ' + (same.length - 1) + 'か所あります(同じ工区として数えています)。</p>',
+          [{ label: 'この範囲だけ', value: 'one' }, { label: 'やめる', value: null }, { label: '全部変える', cls: 'pri', value: 'all' }]);
+        if (r !== 'one' && r !== 'all') return; all = r === 'all';
+      }
+      push();
+      const ex = pgs.flatMap(q => q.zones).find(q => q.name === nv);              // 入れる先の名前がもうあれば、その色にそろえる
+      if (all) {
+        same.forEach(q => { q.name = nv; if (ex) q.color = ex.color; });
+        pgs.forEach(q => q.lens.forEach(l => { if (l.zn === old) l.zn = nv; }));   // 選んであった工区も新しい名前に
+      } else {
+        z.name = nv; if (ex) z.color = ex.color;
+        if (!pg.zones.some(q => q.name === old)) pg.lens.forEach(l => { if (l.zn === old) l.zn = nv; });
+      }
+      changed(); redraw(); toast('工区の名前を「' + nv + '」にしました');
+    },
     del: async () => { if (await confirmDlg('工区を消す', '工区「' + z.name + '」のこの範囲を消します(拾った印は残ります)。', '消す', 'warn')) { push(); const pg = curPage(); { const zi = pg.zones.indexOf(z); if (zi < 0) return; pg.zones.splice(zi, 1); }
       if (!pg.zones.some(q => q.name === z.name)) pg.lens.forEach(l => { if (l.zn === z.name) delete l.zn; });   // 選んであった工区が無くなったら「未定」に戻す
       changed(); redraw(); } },
@@ -588,8 +622,11 @@ async function addSec(a, b) {
 function zonesIn(sc, pg) { return pg.zones.filter(z => { const c = polyC(z.pts); return pip(sc.pts, c.x, c.y); }); }
 function secPop(sc, e, q) {
   const pg = curPage(), nz = zonesIn(sc, pg).length;
-  popAt(e, `<div class="pt">伏図「${esc(sc.name)}」 工区 ${nz}</div>${nz && secsOf(pg).length > 1 ? '<button data-a="cp">この工区をほかの伏図に写す</button>' : ''}<button data-a="draw">ここから新しい範囲を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
-    cp: () => startZcopy(sc),
+  popAt(e, `<div class="pt">伏図「${esc(sc.name)}」 工区 ${nz}</div><button data-a="cp">この工区をほかの伏図に写す</button><button data-a="draw">ここから新しい範囲を描く</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">この範囲を消す</button><button data-a="x">閉じる</button>`, {
+    cp: () => {
+      if (secsOf(pg).length < 2) { hint('写す先の伏図がありません。先に「伏図」で、この図面の別の階(3F など)の範囲も囲んでください', 6000); return; }
+      if (!nz) { hint('「' + sc.name + '」の中に工区がありません。先に「工区」で、この範囲の中に工区を描いてください', 6000); return; }
+      startZcopy(sc); },
     draw: () => { S.secPts = [q]; redraw(); hint('伏図: 範囲の反対の角をタップ', 3000); },
     ren: async () => { const v = await askText('伏図の名前', '新しい名前', sc.name); if (v && v.trim()) { push(); sc.name = v.trim(); changed(); redraw(); } },
     del: async () => { if (await confirmDlg('伏図の範囲を消す', '伏図「' + sc.name + '」の範囲を消します(中の工区と拾った印は残ります)。', '消す', 'warn')) { push(); { const si = pg.secs.indexOf(sc); if (si < 0) return; pg.secs.splice(si, 1); } changed(); redraw(); } },
@@ -713,9 +750,10 @@ function renderItemBar() {
   } else $('itCnt').textContent = '';
 }
 function stepItem(d) {
-  if (!P.items.length) return openItemSheet();
-  let i = P.items.findIndex(x => x.id === P.activeItem); i = i < 0 ? 0 : (i + d + P.items.length) % P.items.length;
-  P.activeItem = P.items[i].id; S.pend = null; changed(true); renderItemBar(); redraw();
+  const L = shownItems(P, agg(), P.activeItem);
+  if (!L.length) return openItemSheet();
+  let i = L.findIndex(x => x.id === P.activeItem); i = i < 0 ? 0 : (i + d + L.length) % L.length;
+  P.activeItem = L[i].id; S.pend = null; changed(true); renderItemBar(); redraw();
 }
 $('itPrev').onclick = () => stepItem(-1);
 $('itNext').onclick = () => stepItem(1);
@@ -732,10 +770,19 @@ function openSheet(title, render, searchable) {
 function closeSheet() { $('sheetBg').classList.add('hidden'); $('bsheet').classList.add('hidden'); }
 $('sheetBg').onclick = closeSheet; $('bsClose').onclick = closeSheet;
 
+/* 「拾った部材だけ / 全部の部材」の切り替え(案件ごとに覚える。台帳・部材を選ぶ・Excel で共通) */
+function usedTg() {
+  const n = P.items.length, u = P.items.filter(it => agg().T[it.id].n).length;
+  return `<div class="seg mini usedTg"><button data-u="1" class="${P.onlyUsed ? 'on' : ''}">拾った部材だけ(${u})</button><button data-u="0" class="${P.onlyUsed ? '' : 'on'}">全部の部材(${n})</button></div>`;
+}
+function bindUsedTg(after) {
+  document.querySelectorAll('.usedTg button').forEach(b => b.onclick = () => { const v = b.dataset.u === '1'; if (!!P.onlyUsed === v) return;
+    if (v) P.onlyUsed = true; else delete P.onlyUsed; changed(true); after(); });
+}
 function openItemSheet() {
   openSheet('部材を選ぶ', q => {
     const a = agg(), ql = q.toLowerCase();
-    const list = P.items.filter(it => !q || it.name.toLowerCase().includes(ql));
+    const list = q ? P.items.filter(it => it.name.toLowerCase().includes(ql)) : shownItems(P, a, P.activeItem);   // 探すときは全部から
     const rows = list.map((it, k) => {
       const T = a.T[it.id], c = a.PG[it.id][P.cur] || blank();
       const qq = x => it.kind === 'm' ? (x.mm / 1000).toFixed(1) : String(x.n);
@@ -743,9 +790,11 @@ function openItemSheet() {
         <span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
         <span class="v">${qq(c)} <small>全部 ${qq(T)}${KIND[it.kind].unit}</small></span></div>`;
     }).join('');
-    $('bsBody').innerHTML = `<div class="list">${rows || '<div class="empty">' + (P.items.length ? '見つかりません' : 'まだ部材がありません') + '</div>'}</div>
+    const emp = !P.items.length ? 'まだ部材がありません' : q ? '見つかりません' : 'まだ拾った部材がありません。上の欄に名前を入れると全部の部材から探せます';
+    $('bsBody').innerHTML = usedTg() + `<div class="list">${rows || '<div class="empty">' + emp + '</div>'}</div>
       <div class="add"><button id="bsAdd">＋ 部材を追加</button><button id="bsEdit">部材の編集・貼り付け</button></div>`;
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; S.pend = null; changed(true); renderItemBar(); redraw(); closeSheet(); if (S.mode !== 'pick') setMode('pick'); });
+    bindUsedTg(() => $('bsSearch').oninput());
     $('bsAdd').onclick = async () => { closeSheet(); const it = await editItem(null); if (it) { P.activeItem = it.id; renderItemBar(); redraw(); } };
     $('bsEdit').onclick = () => { closeSheet(); openItems('draw'); };
   }, true);
@@ -866,14 +915,16 @@ function renderLedger() {
     <div class="kpi hd"><small>手付</small><b>${t.hd}</b></div><div class="kpi"><small>t</small><b>${(t.kg / 1000).toFixed(2)}</b></div>
     <div class="kpi"><small>見直し</small><b>${t.n ? Math.round(t.rv / t.n * 100) : 0}%</b></div></div>`;
   if (ledTab === 'items') {
-    body.innerHTML = kpi + '<div class="list">' + (P.items.map((it, k) => {
+    const L = shownItems(P, a);
+    body.innerHTML = kpi + usedTg() + '<div class="list">' + (L.map((it, k) => {
       const T = a.T[it.id];
       const q = it.kind === 'm' ? (T.mm / 1000).toFixed(2) + ' m' : T.n + ' ' + KIND[it.kind].unit;
       const sub = it.kind === 'mem' ? `${(T.mm / 1000).toFixed(2)}m ・ 吊${T.sl} 手付${T.hd} ・ ${n0(T.kg)}kg` : (T.kg ? n0(T.kg) + 'kg' : '');
-      return grpHead(it, P.items[k - 1]) + `<div class="row" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
+      return grpHead(it, L[k - 1]) + `<div class="row" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
         <span class="v">${q}<small>${sub}</small><small class="ck${T.n && T.rv < T.n ? ' todo' : ''}">${T.n ? '見直し ' + T.rv + '/' + T.n : '拾いなし'}</small></span></div>`;
-    }).join('') || '<div class="empty">部材がありません。右上の「部材の編集」から追加してください。</div>') + '</div>';
+    }).join('') || '<div class="empty">' + (P.items.length ? 'まだ拾った部材がありません。' : '部材がありません。右上の「部材の編集」から追加してください。') + '</div>') + '</div>';
     body.querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; changed(true); show('draw'); setMode('pick'); renderItemBar(); });
+    bindUsedTg(renderLedger);
   } else if (ledTab === 'zones') {
     const zs = a.cols.filter(c => c !== '__none'), cols = zs.length ? [...zs, '__none'] : [];
     // 工区毎P算出(伏図 × 工区 × 柱/G/B/他)
@@ -894,13 +945,15 @@ function renderLedger() {
       h += '<tr class="foot"><td>計</td>' + Z.blocks.map(b => ZCATS.map(c => `<td>${fz(colT[b + c])}</td>`).join('') + `<td class="sub">${fz(colT[b])}</td>`).join('') + `<td>${fz(all)}</td></tr></table></div>`;
     }
     h += '<div class="sec"><h3>部材 × 工区(全部の伏図の合計)</h3></div><div class="tblWrap"><table class="mx"><tr><th>部材</th>' + zs.map(z => `<th>${esc(z)}</th>`).join('') + (zs.length ? '<th>未割当</th>' : '') + '<th>計</th><th>長さm</th><th>kg</th></tr>';
-    P.items.forEach(it => { const T = a.T[it.id];
+    const L = shownItems(P, a);
+    L.forEach(it => { const T = a.T[it.id];
       h += `<tr><td>${esc(it.name)}</td>` + cols.map(c => `<td>${qtyTxt(it, a.M[it.id][c])}</td>`).join('') +
         `<td><b>${qtyTxt(it, T)}</b></td><td>${it.kind === 'mem' && T.mm ? (T.mm / 1000).toFixed(2) : ''}</td><td>${T.kg ? n0(T.kg) : ''}</td></tr>`; });
     h += '<tr class="foot"><td>吊/手付</td>' + cols.map(c => { let s = 0, d = 0; P.items.forEach(it => { s += a.M[it.id][c].sl; d += a.M[it.id][c].hd; }); return `<td>${s + d ? s + '/' + d : ''}</td>`; }).join('') + `<td>${t.sl}/${t.hd}</td><td></td><td>${n0(t.kg)}</td></tr></table></div>`;
     h += '<div class="sec"><h3>図面ごとの数</h3></div><div class="tblWrap"><table class="mx"><tr><th>部材</th>' + P.pages.map((pg, i) => `<th>${esc(pageName(P, i))}</th>`).join('') + '<th>計</th></tr>';
-    P.items.forEach(it => { h += `<tr><td>${esc(it.name)}</td>` + P.pages.map((pg, i) => `<td>${qtyTxt(it, a.PG[it.id][i])}</td>`).join('') + `<td><b>${qtyTxt(it, a.T[it.id])}</b></td></tr>`; });
-    body.innerHTML = kpi + h + '</table></div>';
+    L.forEach(it => { h += `<tr><td>${esc(it.name)}</td>` + P.pages.map((pg, i) => `<td>${qtyTxt(it, a.PG[it.id][i])}</td>`).join('') + `<td><b>${qtyTxt(it, a.T[it.id])}</b></td></tr>`; });
+    body.innerHTML = kpi + h + '</table></div>' + '<div class="sec">' + usedTg() + '</div>';
+    bindUsedTg(renderLedger);
     body.querySelectorAll('#zmSeg button').forEach(b => b.onclick = () => { zMode = b.dataset.m; renderLedger(); });
     $('zpPick').onclick = async () => { if (await pickZpPages()) renderLedger(); };
   } else if (ledTab === 'check') {
@@ -1008,7 +1061,7 @@ async function editItem(it, fromBar) {
     <div class="row2"><div><label>種類</label><select id="eKd">${['pcs', 'm', 'mem'].map(k => `<option value="${k}"${v.kind === k ? ' selected' : ''}>${KIND[k].lbl}</option>`).join('')}</select></div>
     <div><label>単重(kg/m・kg/個)</label><input id="eW" type="number" inputmode="decimal" value="${esc(v.w)}"></div></div>
     <div class="row2"><div><label>ボルト</label><input id="eB" type="number" inputmode="decimal" value="${esc(v.bolt)}"></div>
-    <div><label>柱/G/B/他</label><select id="eC"><option value="">名前から(G→G、B→B)</option>${CATS.map(c => `<option${v.cat === c ? ' selected' : ''}>${c}</option>`).join('')}</select></div></div>
+    <div><label>柱/G/B/他</label><select id="eC"><option value="">名前から(柱→柱、G→G、B→B)</option>${CATS.map(c => `<option${v.cat === c ? ' selected' : ''}>${c}</option>`).join('')}</select></div></div>
     <label>色</label><input id="eCol" type="color" value="${v.color}" style="height:44px;padding:2px">
     <p style="font-size:12.5px;color:var(--ink2);margin-top:8px">個: タップ1回で数える / m: 2点で長さ / 部材: 2点で長さ→重量→吊・手付</p>`,
     [...(isNew ? [] : [{ label: '消す', cls: 'warn', value: 'del' }, { label: '分割(仕口)', value: 'split' }]), ...(fromBar ? [{ label: '一覧・貼り付け', value: 'list' }] : []), { label: 'やめる', value: null },
