@@ -31,7 +31,7 @@ const TAP_R = 16;                       // タップで印を選ぶ範囲(画面
 const SNAP_R = 14;                      // 線の端・図面の線に吸い付く範囲(画面の px)
 
 let P = null;                           // 開いている案件
-const S = { mode: 'pick', pend: null, zonePts: [], scalePts: [], secPts: [], zc: null, zmove: null, ortho: false, rev: { list: [], i: 0, filter: 'todo' } };
+const S = { hl: false, mode: 'pick', pend: null, zonePts: [], scalePts: [], secPts: [], zc: null, zmove: null, ortho: false, rev: { list: [], i: 0, filter: 'todo' } };
 const docs = {};                        // file id → pdf.js の文書 / 画像
 let A = null;                           // 集計(変わったら作り直す)
 
@@ -62,7 +62,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v14';
+const APP_VER = 'v16';
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -90,7 +90,7 @@ async function shareFile(blob, name, how) {
 /* ── 保存・元に戻す ── */
 let saveT = null;
 const hist = [];
-function snap() { return JSON.stringify({ items: P.items, pages: P.pages, threshold: P.threshold, nid: P.nid, files: P.files }); }
+function snap() { return JSON.stringify({ items: P.items, pages: P.pages, trash: P.trash || [], threshold: P.threshold, nid: P.nid, files: P.files }); }
 function push() { hist.push(snap()); if (hist.length > 60) hist.shift(); }
 function changed(selOnly) { stale(); if (!selOnly) P.updatedAt = Date.now(); clearTimeout(saveT); saveT = setTimeout(saveNow, 400); }
 async function saveNow() { clearTimeout(saveT); saveT = null; if (P) try { await Store.putProj(P); } catch (e) { toast('保存できませんでした: ' + e.message, 4000); } }
@@ -315,7 +315,7 @@ function redraw() {
     t.textContent = z.name;
     if (S.zmove && S.zmove.z === z) z.pts.forEach((v, i) => el('circle', { cx: v.x, cy: v.y, r: (S.zmove.vi === i ? 9 : 6) * k, fill: S.zmove.vi === i ? z.color : '#fff', stroke: z.color, 'stroke-width': 2.5 * k }, svg));
   });
-  const faded = o => S.mode !== 'review' && it0 && o.it !== act;
+  const faded = o => !S.hl && S.mode !== 'review' && it0 && o.it !== act;
   // 線
   pg.lens.forEach(l => {
     const it = itemOf(P, l.it); const col = it ? it.color : '#888';
@@ -330,6 +330,13 @@ function redraw() {
       const t = el('text', { x: m.x + ox, y: m.y + oy, 'font-size': 11 * k, 'font-weight': 700, fill: col, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3 * k }, g);
       t.textContent = n0(mm);
     }
+    if (S.hl && it) {               // 強調: 部材名と吊・手付
+      const m = markPt(l), d = Math.hypot(l.x2 - l.x1, l.y2 - l.y1) || 1;
+      let ox = (l.y2 - l.y1) / d * 10 * k, oy = -(l.x2 - l.x1) / d * 10 * k; if (oy < 0 || (oy === 0 && ox < 0)) { ox = -ox; oy = -oy; }
+      const t = el('text', { x: m.x + ox, y: m.y + oy, 'font-size': 11 * k, 'font-weight': 700, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3 * k }, g);
+      const a = el('tspan', { fill: col }, t); a.textContent = it.name;
+      if (j) { const b = el('tspan', { fill: j === '吊' ? '#2563ab' : '#0f8a70', dx: 4 * k }, t); b.textContent = j; }
+    }
   });
   // 個
   pg.dots.forEach(d => {
@@ -337,6 +344,7 @@ function redraw() {
     const g = el('g', { opacity: faded(d) ? 0.3 : 1 }, svg);
     el('circle', { cx: d.x, cy: d.y, r: 6 * k, fill: col, stroke: '#fff', 'stroke-width': 1.5 * k }, g);
     if (S.mode === 'review' && d.rv) el('circle', { cx: d.x, cy: d.y, r: 8.5 * k, fill: 'none', stroke: '#2f7a4a', 'stroke-width': 1.5 * k }, g);
+    if (S.hl && it) { const t = el('text', { x: d.x, y: d.y - 10 * k, 'font-size': 10 * k, 'font-weight': 700, fill: col, 'text-anchor': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 3 * k }, g); t.textContent = it.name; }
   });
   // 見直し中の印
   if (revCur && revCur.pi === P.cur) {
@@ -643,6 +651,7 @@ $('btnModeItems').onclick = async () => {
   const it = await editItem(null, true);
   if (it) { P.activeItem = it.id; S.pend = null; changed(); renderItemBar(); redraw(); if (S.mode !== 'pick') setMode('pick'); toast('「' + it.name + '」を追加しました。そのまま拾えます'); }
 };
+$('btnHl').onclick = () => { S.hl = !S.hl; $('btnHl').classList.toggle('on', S.hl); redraw(); toast('強調 ' + (S.hl ? 'ON(全部の部材を濃く、部材名と吊・手付を表示)' : 'OFF')); };
 $('btnOrtho').onclick = () => { S.ortho = !S.ortho; $('btnOrtho').classList.toggle('on', S.ortho); toast('直角 ' + (S.ortho ? 'ON(水平・垂直だけ)' : 'OFF')); };
 
 /* ── 見直し ── */
@@ -750,24 +759,60 @@ function openPageSheet() {
         <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span></div>`;
     }).join('');
     $('bsBody').innerHTML = `<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
-      ${curPage() ? `<div class="add"><button id="bsZp">${curPage().zp ? '☑ 書き出しに入れている(押すと外す)' : '☐ 書き出しに入れる'}</button><button id="bsDelPg" style="color:var(--warn)">この図面を消す</button></div>` : ''}`;
+      ${curPage() ? `<div class="add"><button id="bsZp">${curPage().zp ? '☑ 書き出しに入れている(押すと外す)' : '☐ 書き出しに入れる'}</button><button id="bsDelPg" style="color:var(--warn)">図面を消す(選んで)</button></div>` : ''}
+      ${(P.trash || []).length ? `<div class="add"><button id="bsTrash">消した図面を戻す(${P.trash.length}枚)</button></div>` : ''}`;
+    if ($('bsTrash')) $('bsTrash').onclick = () => { closeSheet(); restorePages(); };
     if ($('bsZp')) $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を書き出しに' + (pg.zp ? '入れます' : '入れません')); };
-    if ($('bsDelPg')) $('bsDelPg').onclick = async () => {
-      closeSheet(); const pg = curPage(), n = pg.dots.length + pg.lens.length;
-      if (P.pages.length <= 1) { await dialog('図面を消す', '<p>最後の1枚は消せません。図面を差し替えるときは、先に「＋ 図面を追加」で新しい図面を入れてから、古い図面を消してください。</p>', [{ label: 'OK', cls: 'pri', value: true }]); return; }
-      if (!(await confirmDlg('図面を消す', '「' + pageName(P, P.cur) + '」を案件から消します。' + (n ? 'この図面で拾った印 ' + n + '件も消えます。' : ''), '消す', 'warn'))) return;
-      P.pages.splice(P.cur, 1);
-      if (!P.pages.some(q => q.file === pg.file)) { P.files = P.files.filter(f => f.id !== pg.file); Store.delFile(P.id, pg.file); delete docs[pg.file]; }
-      hist.length = 0; changed(); await saveNow();
-      const ni = Math.min(P.cur, P.pages.length - 1); P.cur = -1; await gotoPage(ni, true);
-      if (S.mode === 'review') startReview();
-    };
+    if ($('bsDelPg')) $('bsDelPg').onclick = () => { closeSheet(); deletePages(); };
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); gotoPage(+r.dataset.i, true); });
     $('bsAddPdf').onclick = () => { closeSheet(); filesFor = 'add'; $('fFiles').value = ''; $('fFiles').click(); };
     $('bsRen').onclick = async () => { closeSheet(); if (!curPage()) return; const v = await askText('図面の名前', '工区毎P算出などの見出しに使います', pageName(P, P.cur)); if (v && v.trim()) { push(); curPage().name = v.trim(); changed(); $('pageLbl').textContent = pageName(P, P.cur); } };
   }, false);
 }
 $('btnPage').onclick = openPageSheet;
+/* ── 図面を消す(チェックで選ぶ)→「消した図面」に入る。あとで戻せる ── */
+function pageChecks(list, checked) {
+  return list.map((x, i) => `<div class="jrow"><input type="checkbox" id="pc${i}"${checked(x, i) ? ' checked' : ''}><label for="pc${i}"><b>${esc(x.nm)}</b><small>${x.sub}</small></label><span></span></div>`).join('');
+}
+async function deletePages() {
+  const list = P.pages.map((pg, i) => ({ pg, nm: pageName(P, i), sub: '印 ' + (pg.dots.length + pg.lens.length) + (secsOf(pg).length ? ' ・ 伏図 ' + secsOf(pg).length : '') }));
+  const r = await dialog('図面を消す', '<p style="font-size:13px;color:var(--ink2)">消す図面にチェックを入れてください。消した図面は「消した図面を戻す」から、拾った印ごと戻せます。</p>' + pageChecks(list, (x, i) => i === P.cur),
+    [{ label: 'やめる', value: null }, { label: '消す', cls: 'warn', read: () => { const sel = list.map((x, i) => $('pc' + i).checked); if (!sel.some(Boolean)) { toast('消す図面にチェックを入れてください'); return false; } return sel; } }]);
+  if (!Array.isArray(r)) return;
+  push(); if (!P.trash) P.trash = [];
+  const keep = [], curId = curPage() && curPage().id; let n = 0;
+  list.forEach((x, i) => { if (r[i]) { P.trash.push({ pg: x.pg, nm: x.nm, at: i, t: Date.now() }); n++; } else keep.push(x.pg); });
+  P.pages = keep; changed(); await saveNow();
+  toast(n + '枚の図面を消しました(「消した図面を戻す」で戻せます)', 3500);
+  let ni = P.pages.findIndex(q => q.id === curId); if (ni < 0) ni = Math.min(P.cur, P.pages.length - 1);
+  P.cur = -1; if (ni >= 0) await gotoPage(ni, true); else showNoPage();
+  if (S.mode === 'review') startReview();
+}
+async function restorePages() {
+  const T = P.trash || []; if (!T.length) return;
+  const list = T.map(x => ({ nm: x.nm, sub: '印 ' + (x.pg.dots.length + x.pg.lens.length) + ' ・ ' + new Date(x.t).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) + ' に消した' }));
+  const r = await dialog('消した図面を戻す', '<p style="font-size:13px;color:var(--ink2)">戻す図面にチェックを入れてください。「完全に消す」を押すと、チェックした図面は二度と戻せません。</p>' + pageChecks(list, () => true),
+    [{ label: '完全に消す', cls: 'warn', read: () => ({ a: 'del', sel: list.map((x, i) => $('pc' + i).checked) }) }, { label: 'やめる', value: null },
+     { label: '戻す', cls: 'pri', read: () => ({ a: 'back', sel: list.map((x, i) => $('pc' + i).checked) }) }]);
+  if (!r || !r.sel || !r.sel.some(Boolean)) return;
+  if (r.a === 'del') {
+    const n = r.sel.filter(Boolean).length;
+    if (!(await confirmDlg('完全に消す', 'チェックした図面 ' + n + '枚を完全に消します。拾った印も消え、元に戻せません。', '完全に消す', 'warn'))) return;
+    P.trash = T.filter((x, i) => !r.sel[i]);
+    const used = new Set([...P.pages, ...P.trash.map(x => x.pg)].map(q => q.file));
+    P.files.filter(f => !used.has(f.id)).forEach(f => { Store.delFile(P.id, f.id); delete docs[f.id]; });
+    P.files = P.files.filter(f => used.has(f.id));
+    hist.length = 0; changed(); await saveNow(); toast(n + '枚を完全に消しました'); return;
+  }
+  push();
+  const back = T.filter((x, i) => r.sel[i]).sort((a, b) => a.at - b.at);
+  P.trash = T.filter((x, i) => !r.sel[i]);
+  back.forEach(x => P.pages.push(x.pg)); P.pages.sort((a, b) => a.id - b.id);   // 元の並び順(図面は入れた順に番号が付いている)
+  changed(); await saveNow();
+  const ni = P.pages.indexOf(back[0].pg); P.cur = -1; await gotoPage(ni, true);
+  toast(back.length + '枚の図面を戻しました');
+}
+
 /* 書き出し(Excel・PDF)と工区毎P算出に使う図面: 選んだ図面だけ。伏図を囲んだ図面は、その範囲の中の拾いだけ */
 async function exportScope() {
   if (!P.pages.some(q => q.zp)) { toast('書き出す図面を選んでください'); if (!(await pickZpPages())) return null; renderLedger(); if (!P.pages.some(q => q.zp)) return null; }
