@@ -65,7 +65,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v20';   // sw.js の VER と同じ番号にする
+const APP_VER = 'v22';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -496,19 +496,18 @@ async function scaleTap(p) {
   if (S.scalePts.length < 2) { hint('縮尺: 2点目をタップ', 3000); return; }
   const [a, b] = S.scalePts; S.scalePts = []; redraw();
   const d = Math.hypot(b.x - a.x, b.y - a.y); if (d < 3) return;
-  const v = await askText('縮尺を合わせる', 'この2点の間の実際の寸法(mm)', '', 'number');
-  const mm = parseFloat(String(v || '').replace(/,/g, '')); if (!(mm > 0)) return;
+  const r = await dialog('縮尺を合わせる', '<label>この2点の間の実際の寸法(mm)</label><input id="dIn" type="number" inputmode="decimal">', [{ label: 'やめる', value: null }, ...scaleBtns()]);
+  const mm = r ? parseFloat(String(r.v || '').replace(/,/g, '')) : 0; if (!(mm > 0)) return;
   const n = Math.round(mm / d / MM_PER_U * 100) / 100;
-  await applyScale(n);
+  await applyScale(n, r.all);
   setMode('pick');
 }
-async function applyScale(n) {
-  let all = false;
-  if (P.pages.length > 1) {
-    const r = await dialog('縮尺 1/' + n, '<p>どの図面に使いますか?</p>', [{ label: 'この図面だけ', value: 'one' }, { label: '全部の図面', cls: 'pri', value: 'all' }]);
-    if (r !== 'one' && r !== 'all') return;
-    all = r === 'all';
-  }
+/* 縮尺の窓のボタン: 図面が2枚以上なら「この図面だけ」「全部の図面」を、入力と同じ窓に出す(窓を2回出さない) */
+function scaleBtns() {
+  const rd = all => () => { const v = $('dIn').value; if (!(parseFloat(String(v).replace(/,/g, '')) > 0)) { toast('数字を入れてください'); return false; } return { v, all }; };
+  return P.pages.length > 1 ? [{ label: 'この図面だけ', cls: 'pri', read: rd(false) }, { label: '全部の図面', read: rd(true) }] : [{ label: 'OK', cls: 'pri', read: rd(false) }];
+}
+async function applyScale(n, all) {
   push();
   (all ? P.pages : [curPage()]).forEach(pg => setScaleN(pg, n));
   changed(); renderScaleLbl(); redraw(); renderItemBar(); toast('縮尺 1/' + n + ' にしました(拾った長さも計算し直し)');
@@ -896,9 +895,10 @@ $('btnScale').onclick = async () => {
   const n = scaleN(curPage());
   const r = await dialog('縮尺', `<label>縮尺 1/○ の ○</label><input id="dIn" type="number" inputmode="decimal" value="${n ? Math.round(n * 100) / 100 : ''}" placeholder="100">
     <p style="margin-top:10px;color:var(--ink2);font-size:13px">分からないときは「2点で合わせる」で、寸法の分かっている2点(通り芯など)をタップします。</p>`,
-    [{ label: '2点で合わせる', value: 'two' }, { label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
+    [{ label: '2点で合わせる', value: 'two' }, { label: 'やめる', value: null }, ...scaleBtns()]);
   if (r === 'two') { setMode('scale'); return; }
-  const v = parseFloat(String(r || '').replace(/,/g, '')); if (v > 0) await applyScale(v);
+  if (!r || typeof r !== 'object') return;
+  const v = parseFloat(String(r.v).replace(/,/g, '')); if (v > 0) await applyScale(v, r.all);
 };
 $('btnUndo').onclick = undo;
 $('btnBack').onclick = async () => { await saveNow(); P = null; renderHome(); };

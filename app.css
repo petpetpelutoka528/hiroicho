@@ -190,3 +190,9 @@ table.zt td,table.zt th{padding:5px 6px}
 /* 拾った部材だけ / 全部の部材 */
 .seg.mini.usedTg{padding:0 10px 8px}
 .sec .seg.mini.usedTg{padding:4px 0 0}
+/* 図面の名前が長くても「縮尺」が画面の外に出ないように: 名前のほうを「…」で切る */
+.hscroll #btnPage{flex:0 1 auto;min-width:56px;display:flex;align-items:center;gap:3px;overflow:hidden}
+#pageLbl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hscroll #btnScale{flex:none}
+/* 下のモードのボタンを全部1画面に収める(見直し・移動が隠れないように) */
+#modes button{flex:1 1 0;min-width:0;padding:0 2px;font-size:13.5px}
