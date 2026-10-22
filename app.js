@@ -72,7 +72,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v24';   // sw.js の VER と同じ番号にする
+const APP_VER = 'v25';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -1156,8 +1156,11 @@ document.addEventListener('keydown', e => {
   if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
   if (e.key === 'Escape') { S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') setMode('sec'); hidePop(); redraw(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
-  else if (e.key === 'ArrowRight' && S.mode !== 'review') stepItem(1);
-  else if (e.key === 'ArrowLeft' && S.mode !== 'review') stepItem(-1);
+  else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && S.mode !== 'review') {   // ← → で前後の図面(部材の切り替えはキーなし)
+    e.preventDefault(); const d = e.key === 'ArrowRight' ? 1 : -1, i = P.cur + d;
+    if (i < 0 || i >= P.pages.length) { toast(d > 0 ? '最後の図面です' : '最初の図面です'); return; }
+    stepPage(d);
+  }
 });
 
 if ($('verLbl')) $('verLbl').textContent = APP_VER;   // 最初の画面の「拾い帳」の横に版の番号
