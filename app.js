@@ -36,7 +36,7 @@ const docs = {};                        // file id → pdf.js の文書 / 画像
 let A = null;                           // 集計(変わったら作り直す)
 
 /* ── 小物 ── */
-function toast(m, ms) { const t = $('toast'); t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), ms || 2200); }
+function toast(m, ms) { const t = $('toast'), nb = $('notes'); t.style.bottom = nb && nb.children.length ? 'calc(' + (128 + nb.offsetHeight) + 'px + var(--sab))' : ''; t.textContent = m; t.classList.add('show'); clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove('show'), ms || 2200); }
 /* 何かが変わったら、何がどう変わったかを帯で知らせる。OK を押すまで残る。画面はふさがない(下に積み重なる) */
 function note(m) {
   const box = $('notes'), el = document.createElement('div'); el.className = 'note';
@@ -72,7 +72,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v25';   // sw.js の VER と同じ番号にする
+const APP_VER = 'v26';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -299,11 +299,13 @@ let navTok = 0;
 async function gotoPage(i, fit) {
   if (!P.pages[i]) return;
   const same = P.cur === i && !fit, tok = ++navTok;
-  P.cur = i; S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') { S.zc = null; S.mode = 'sec'; }
-  busy(true); $('pgPrev').disabled = $('pgNext').disabled = true;
+  P.cur = i; S.pend = null; S.crPend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') { S.zc = null; S.mode = 'sec'; }
+  // 画面全体に幕はかけない: 次の図面ができるまで今の図面を見せておき、できたら入れ替える。時間がかかるときだけ上に小さく出す
+  S.loading = true; $('pgPrev').disabled = $('pgNext').disabled = true;
+  const ld = setTimeout(() => { if (tok === navTok) $('pgLoad').classList.add('show'); }, 250);
   try { const src = await pageSrc(P.pages[i]); if (tok !== navTok) return; await Viewer.show(src, same); }
   catch (e) { console.error(e); toast('図面を表示できませんでした', 3000); }
-  finally { if (tok === navTok) busy(false); }
+  finally { clearTimeout(ld); if (tok === navTok) { S.loading = false; $('pgLoad').classList.remove('show'); } }
   if (tok !== navTok || !P) return;
   $('pageLbl').textContent = pageName(P, i) + (P.pages.length > 1 ? `(${i + 1}/${P.pages.length})` : '');
   renderPgNav(); renderScaleLbl(); redraw(); renderItemBar(); changed(true);
@@ -384,6 +386,110 @@ function redraw() {
     S.zonePts.forEach((p, i) => el('circle', { cx: p.x, cy: p.y, r: (i ? 4 : 8) * k, fill: i ? '#c94f2c' : 'none', stroke: '#c94f2c', 'stroke-width': 2 * k }, svg));
   }
   S.scalePts.forEach(p => el('circle', { cx: p.x, cy: p.y, r: 6 * k, fill: 'none', stroke: '#2563ab', 'stroke-width': 3 * k }, svg));
+  drawCranes(svg, pg, k);
+}
+/* ── 作業半径(ラフタ): pg.cranes = [{ id, name, x, y, rings: [{ id, mm, a0, a1 }] }]。半径は mm で持ち、縮尺から描く ── */
+const CR_COL = '#c2187a';
+function ringArc(c, r, a0, a1) {   // a0 から時計回りに a1 まで(画面の向き)
+  const sw = ((a1 - a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) || 2 * Math.PI;
+  const x0 = c.x + r * Math.cos(a0), y0 = c.y + r * Math.sin(a0), x1 = c.x + r * Math.cos(a0 + sw), y1 = c.y + r * Math.sin(a0 + sw);
+  return { sw, d: `M${c.x} ${c.y} L${x0} ${y0} A${r} ${r} 0 ${sw > Math.PI ? 1 : 0} 1 ${x1} ${y1} Z` };
+}
+function ringDimAngle(rg, idx) { return rg.a0 === undefined ? -Math.PI / 4 + idx * 0.22 : rg.a0 + ringArc({ x: 0, y: 0 }, 1, rg.a0, rg.a1).sw / 2 + (idx % 2 ? 0.12 : -0.12) * Math.min(1, idx); }
+function drawCranes(svg, pg, k) {
+  const on = S.mode === 'crane';
+  (pg.cranes || []).forEach(c => {
+    const g = el('g', { opacity: on ? 1 : 0.75 }, svg);
+    if (pg.scale) c.rings.forEach((rg, idx) => {
+      const r = rg.mm / pg.scale;
+      if (rg.a0 === undefined) el('circle', { cx: c.x, cy: c.y, r, fill: 'none', stroke: CR_COL, 'stroke-width': 2 * k }, g);
+      else el('path', { d: ringArc(c, r, rg.a0, rg.a1).d, fill: CR_COL + '0f', stroke: CR_COL, 'stroke-width': 2 * k, 'stroke-linejoin': 'round' }, g);
+      const a = ringDimAngle(rg, idx), ex = c.x + r * Math.cos(a), ey = c.y + r * Math.sin(a);
+      el('line', { x1: c.x, y1: c.y, x2: ex, y2: ey, stroke: CR_COL, 'stroke-width': 1.2 * k, 'stroke-dasharray': `${6 * k} ${4 * k}` }, g);
+      el('circle', { cx: ex, cy: ey, r: 3 * k, fill: CR_COL }, g);
+      const t = el('text', { x: c.x + (r + 26 * k) * Math.cos(a), y: c.y + (r + 26 * k) * Math.sin(a), 'font-size': 14 * k, 'font-weight': 700, fill: CR_COL, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4 * k }, g);
+      t.textContent = 'R=' + (rg.mm / 1000).toFixed(1) + 'm';
+    });
+    el('circle', { cx: c.x, cy: c.y, r: 8 * k, fill: '#fff', stroke: CR_COL, 'stroke-width': 2.5 * k }, g);
+    el('path', { d: `M${c.x - 12 * k} ${c.y} H${c.x + 12 * k} M${c.x} ${c.y - 12 * k} V${c.y + 12 * k}`, stroke: CR_COL, 'stroke-width': 1.6 * k }, g);
+    const t = el('text', { x: c.x, y: c.y + 26 * k, 'font-size': 14 * k, 'font-weight': 700, fill: CR_COL, 'text-anchor': 'middle', 'paint-order': 'stroke', stroke: '#fff', 'stroke-width': 4 * k }, g);
+    t.textContent = c.name;
+  });
+  const cp = S.crPend;
+  if (cp && cp.t === 'fan2') el('circle', { cx: cp.p.x, cy: cp.p.y, r: 8 * k, fill: 'none', stroke: CR_COL, 'stroke-width': 3 * k }, svg);
+}
+function hitCrane(p) {
+  const pg = curPage(), tol = TAP_R / Viewer.s;
+  for (const c of pg.cranes || []) if (Math.hypot(p.x - c.x, p.y - c.y) < tol) return { c };
+  if (!pg.scale) return null;
+  let best = null, bd = tol;
+  (pg.cranes || []).forEach(c => c.rings.forEach(rg => {
+    const d = Math.hypot(p.x - c.x, p.y - c.y), dr = Math.abs(d - rg.mm / pg.scale);
+    let inFan = true;
+    if (rg.a0 !== undefined) { const a = Math.atan2(p.y - c.y, p.x - c.x), sw = ringArc(c, 1, rg.a0, rg.a1).sw; inFan = ((a - rg.a0) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) <= sw + 0.05; }
+    if (inFan && dr < bd) { bd = dr; best = { c, rg }; }
+  }));
+  return best;
+}
+async function craneTap(p, e, placed) {
+  const pg = curPage();
+  if (!pg.scale) { hint('作業半径は、先にこの図面の縮尺を入れてから使えます(上の 1/100 のボタン)', 5000); return; }
+  const q = placed ? p : snapPt(p, 'line'), cp = S.crPend;
+  if (cp) {
+    if (cp.t === 'ring') {
+      const mm = Math.hypot(q.x - cp.c.x, q.y - cp.c.y) * pg.scale; S.crPend = null;
+      if (mm < 100) { toast('中心に近すぎます'); redraw(); return; }
+      push(); cp.c.rings.push({ id: nextId(P), mm: Math.round(mm / 100) * 100 }); changed(); redraw();
+      toast(cp.c.name + ' に R=' + (Math.round(mm / 100) / 10).toFixed(1) + 'm の円を足しました'); return;
+    }
+    if (cp.t === 'move') { push(); cp.c.x = q.x; cp.c.y = q.y; S.crPend = null; changed(); redraw(); toast(cp.c.name + ' の中心を動かしました(円も一緒に)'); return; }
+    if (cp.t === 'fan1') { S.crPend = { t: 'fan2', c: cp.c, rg: cp.rg, a0: Math.atan2(q.y - cp.c.y, q.x - cp.c.x), p: q }; redraw(); hint('扇: 残す範囲のもう一方の端をタップ(1点目から時計回りの範囲が残ります)', 6000); return; }
+    if (cp.t === 'fan2') {
+      const a1 = Math.atan2(q.y - cp.c.y, q.x - cp.c.x); S.crPend = null;
+      push(); cp.rg.a0 = cp.a0; cp.rg.a1 = a1; changed(); redraw();
+      hint('扇にしました。残す側が逆なら、円をタップ →「残す側を反対にする」', 4000); return;
+    }
+  }
+  const h = hitCrane(p);
+  if (h && h.rg) return ringPop(h.c, h.rg, e);
+  if (h) return cranePop(h.c, e);
+  push();
+  if (!pg.cranes) pg.cranes = [];
+  const n = P.pages.reduce((s, x) => s + (x.cranes || []).length, 0) + 1;
+  const c = { id: nextId(P), name: 'ラフタ' + n, x: q.x, y: q.y, rings: [] };
+  pg.cranes.push(c); changed(); redraw();
+  addRing(c, e);
+}
+function addRing(c, e) {
+  popAt(e, `<div class="pt">${esc(c.name)} に円を足す</div><button data-a="num">半径を数字で入れる(m)</button><button data-a="tap">届かせたい所をタップ</button><button data-a="x">閉じる</button>`, {
+    num: async () => {
+      const v = await askText(c.name + ' の作業半径', '半径(m)。例: 15', '', 'number'); const m = parseFloat(String(v || '').replace(/,/g, ''));
+      if (!(m > 0)) return;
+      push(); c.rings.push({ id: nextId(P), mm: Math.round(m * 1000) }); changed(); redraw(); toast(c.name + ' に R=' + m.toFixed(1) + 'm の円を足しました');
+    },
+    tap: () => { S.crPend = { t: 'ring', c }; hint('届かせたい所をタップ(中心からの距離が半径になります)', 5000); },
+    x: () => {}
+  });
+}
+function cranePop(c, e) {
+  popAt(e, `<div class="pt">${esc(c.name)}  円 ${c.rings.length}</div><button data-a="add">円を足す</button><button data-a="mv">中心を動かす</button><button data-a="ren">名前を変える</button><button data-a="del" class="warn">このラフタを消す(円も全部)</button><button data-a="x">閉じる</button>`, {
+    add: () => addRing(c, e),
+    mv: () => { S.crPend = { t: 'move', c }; hint('新しい中心をタップ', 4000); },
+    ren: async () => { const v = await askText('ラフタの名前', '例: 25t ラフタ', c.name); if (v && v.trim()) { push(); c.name = v.trim(); changed(); redraw(); } },
+    del: async () => { if (!(await confirmDlg('ラフタを消す', c.name + ' と、その円 ' + c.rings.length + 'つを消します。', '消す', 'warn'))) return; push(); const pg = curPage(); pg.cranes.splice(pg.cranes.indexOf(c), 1); changed(); redraw(); },
+    x: () => {}
+  });
+}
+function ringPop(c, rg, e) {
+  const fan = rg.a0 !== undefined;
+  popAt(e, `<div class="pt">${esc(c.name)}  R=${(rg.mm / 1000).toFixed(1)}m${fan ? '(扇)' : ''}</div><button data-a="fan">${fan ? '扇を作り直す' : '扇にする(残す範囲の両端をタップ)'}</button>${fan ? '<button data-a="flip">残す側を反対にする</button><button data-a="full">円に戻す</button>' : ''}<button data-a="r">半径を変える(m)</button><button data-a="del" class="warn">この円を消す</button><button data-a="x">閉じる</button>`, {
+    fan: () => { S.crPend = { t: 'fan1', c, rg }; hint('扇: 残す範囲の片方の端をタップ', 5000); },
+    flip: () => { push(); [rg.a0, rg.a1] = [rg.a1, rg.a0]; changed(); redraw(); },
+    full: () => { push(); delete rg.a0; delete rg.a1; changed(); redraw(); },
+    r: async () => { const v = await askText('作業半径', '半径(m)', (rg.mm / 1000).toFixed(1), 'number'); const m = parseFloat(String(v || '').replace(/,/g, '')); if (!(m > 0)) return; push(); rg.mm = Math.round(m * 1000); changed(); redraw(); },
+    del: () => { push(); c.rings.splice(c.rings.indexOf(rg), 1); changed(); redraw(); },
+    x: () => {}
+  });
 }
 
 /* ── 吸着 ── */
@@ -432,6 +538,8 @@ function markText(o, pg) {
 function onTap(p, e) {
   hidePop();
   if (!curPage()) return;
+  if (S.loading) { toast('図面を読み込み中です'); return; }
+  if (S.mode === 'crane') return craneTap(p, e, false);
   if (S.mode === 'pick') return pickTap(p, e, false);
   if (S.mode === 'zone') return zoneTap(p, e, false);
   if (S.mode === 'sec') return secTap(p, e, false);
@@ -441,6 +549,8 @@ function onTap(p, e) {
   if (S.mode === 'view') { const o = hitMark(p); if (o) markPop(o, e); }
 }
 function onPlace(p, e) {           // 長押しのあと離した所(ルーペで合わせた所)
+  if (S.loading) return;
+  if (S.mode === 'crane') return craneTap(p, e, true);
   if (S.mode === 'pick') return pickTap(p, e, true);
   if (S.mode === 'zone') return zoneTap(p, e, true);
   if (S.mode === 'sec') return secTap(p, e, true);
@@ -449,7 +559,7 @@ function onPlace(p, e) {           // 長押しのあと離した所(ルーペ�
 }
 function loupePoint(p) {
   if (S.mode === 'zone') return snapPt(p, 'zone');
-  if (S.mode === 'scale' || S.mode === 'zcopy' || S.mode === 'sec') return snapPt(p, 'line');
+  if (S.mode === 'scale' || S.mode === 'zcopy' || S.mode === 'sec' || S.mode === 'crane') return snapPt(p, 'line');
   const it = activeIt(); if (!it) return p;
   let q = snapPt(p, it.kind === 'pcs' ? 'pcs' : 'line');
   if (S.pend && S.ortho) q = orthoTo(S.pend, q);
@@ -526,7 +636,7 @@ function applyScale(n, all) {
   pgs.forEach(pg => setScaleN(pg, n));
   changed(); renderScaleLbl(); redraw(); renderItemBar();
   note(all ? '全部の図面(' + pgs.length + '枚)の縮尺を 1/' + s + ' にしました。拾った長さも計算し直しました'
-           : '「' + pageName(P, P.cur) + '」の縮尺を 1/' + s + ' にしました(ほかの図面はそのまま)。拾った長さも計算し直しました');
+           : '「' + pageName(P, P.cur) + '」の縮尺を 1/' + s + ' にしました(ほかの図面はそのまま)。拾った長さも計算し直しました' + ((curPage().cranes || []).length ? '。作業半径の円も、この縮尺で描き直しました' : ''));
 }
 async function scaleAll() {
   const ns = [...new Set(P.pages.map(pg => scaleN(pg)).filter(Boolean).map(v => Math.round(v * 100) / 100))];
@@ -684,12 +794,13 @@ const MODE_HINT = {
   zone: '工区: 角を順にタップ。最初の点をタップで閉じる。工区をタップで角を動かす・名前・消す',
   sec: '伏図: 1枚に 2F・3F… と並んでいるとき、範囲の対角の2点をタップして名前を付ける。範囲をタップで「工区をほかの伏図に写す」',
   scale: 'この図面の縮尺: 寸法の分かっている2点をタップ(通り芯など)',
+  crane: '半径: ラフタの中心をタップ → 半径を決める。円をタップで扇にする・半径を変える',
   review: '見直し: 印を1つずつ見て「OK」。全部 OK になれば見落としなし',
   view: '移動: 図面を見るだけ(タップしても拾わない)'
 };
 function setMode(m) {
   if (S.mode === m && m === 'pick' && S.pend) { S.pend = null; redraw(); hint('描きかけをやめました', 1500); return; }
-  S.mode = m; S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zc = null; S.zmove = null;
+  S.mode = m; S.pend = null; S.crPend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zc = null; S.zmove = null;
   document.querySelectorAll('#modes button[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === m));
   $('revBar').classList.toggle('hidden', m !== 'review');
   $('itemBar').classList.toggle('hidden', m === 'review');
@@ -781,7 +892,10 @@ function openSheet(title, render, searchable) {
   const go = () => render($('bsSearch').value.trim());
   $('bsSearch').oninput = go; go();
 }
-function closeSheet() { $('sheetBg').classList.add('hidden'); $('bsheet').classList.add('hidden'); }
+function closeSheet() {
+  $('sheetBg').classList.add('hidden'); $('bsheet').classList.add('hidden');
+  if (S.reordered) { S.reordered = false; note('図面の順番を変えました。Excel・PDF・工区毎P算出の「数量1・数量2…」も、この順番になります'); }
+}
 $('sheetBg').onclick = closeSheet; $('bsClose').onclick = closeSheet;
 
 /* 「拾った部材だけ / 全部の部材」の切り替え(画面だけ: 台帳・部材を選ぶ。Excel は「書き出し」で別に選ぶ) */
@@ -819,9 +933,11 @@ function openPageSheet() {
     const rows = P.pages.map((pg, i) => {
       const n = pg.dots.length + pg.lens.length, rv = [...pg.dots, ...pg.lens].filter(o => o.rv).length, sn = scaleN(pg);
       return `<div class="row${i === P.cur ? ' cur' : ''}" data-i="${i}"><span class="nm">${esc(pageName(P, i))}</span>
-        <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span></div>`;
+        <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span>
+        ${P.pages.length > 1 ? `<span class="mv"><button data-mv="-1" data-i="${i}" aria-label="上へ"${i === 0 ? ' disabled' : ''}>↑</button><button data-mv="1" data-i="${i}" aria-label="下へ"${i === P.pages.length - 1 ? ' disabled' : ''}>↓</button></span>` : ''}</div>`;
     }).join('');
     $('bsBody').innerHTML = `${P.pages.length ? `<div class="add"><button id="bsScaleAll">全部の図面の縮尺を変える(${P.pages.length}枚)</button></div>` : ''}<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
+      ${curPage() ? '<div class="add"><button id="bsCopy">この図面をコピー(図面だけ)</button></div>' : ''}
       ${curPage() ? `<div class="add"><button id="bsZp">${curPage().zp ? '☑ 書き出しに入れている(押すと外す)' : '☐ 書き出しに入れる'}</button><button id="bsDelPg" style="color:var(--warn)">図面を消す(選んで)</button></div>` : ''}
       ${(P.trash || []).length ? `<div class="add"><button id="bsTrash">消した図面を戻す(${P.trash.length}枚)</button><button id="bsPurge" style="color:var(--warn)">消した図面を完全に消す</button></div>` : ''}`;
     if ($('bsScaleAll')) $('bsScaleAll').onclick = () => { closeSheet(); scaleAll(); };
@@ -830,11 +946,36 @@ function openPageSheet() {
     if ($('bsZp')) $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を書き出しに' + (pg.zp ? '入れます' : '入れません')); };
     if ($('bsDelPg')) $('bsDelPg').onclick = () => { closeSheet(); deletePages(); };
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); gotoPage(+r.dataset.i, true); });
+    $('bsBody').querySelectorAll('[data-mv]').forEach(b => b.onclick = e => { e.stopPropagation(); movePage(+b.dataset.i, +b.dataset.mv); });
+    if ($('bsCopy')) $('bsCopy').onclick = () => { closeSheet(); copyPage(); };
     $('bsAddPdf').onclick = () => { closeSheet(); filesFor = 'add'; $('fFiles').value = ''; $('fFiles').click(); };
     $('bsRen').onclick = async () => { closeSheet(); if (!curPage()) return; const v = await askText('図面の名前', '工区毎P算出などの見出しに使います', pageName(P, P.cur)); if (v && v.trim()) { push(); curPage().name = v.trim(); changed(); $('pageLbl').textContent = pageName(P, P.cur); } };
   }, false);
 }
 $('btnPage').onclick = openPageSheet;
+/* 並べ替え: ↑ ↓ で1つずつ。Excel の「数量1・数量2…」の列の順番も変わるので、一覧を閉じたときに帯で知らせる */
+function movePage(i, d) {
+  const j = i + d; if (j < 0 || j >= P.pages.length) return;
+  push();
+  const cur = curPage();
+  [P.pages[i], P.pages[j]] = [P.pages[j], P.pages[i]];
+  P.cur = P.pages.indexOf(cur);
+  S.reordered = true; changed();
+  $('pageLbl').textContent = pageName(P, P.cur) + (P.pages.length > 1 ? `(${P.cur + 1}/${P.pages.length})` : ''); renderPgNav();
+  const top = $('bsBody').scrollTop; openPageSheet(); $('bsBody').scrollTop = top;
+}
+/* コピー: 今の図面を、すぐ後ろに図面だけ複製する(拾った印・工区・伏図・作業半径は入れない) */
+async function copyPage() {
+  const pg = curPage(); if (!pg) return;
+  push();
+  const c = JSON.parse(JSON.stringify(pg));
+  Object.assign(c, { id: nextId(P), name: pageName(P, P.cur) + '(コピー)', dots: [], lens: [], zones: [], secs: [], cranes: [] });
+  delete c.zp;
+  P.pages.splice(P.cur + 1, 0, c);
+  changed(); await saveNow();
+  await gotoPage(P.cur + 1, true);
+  note('「' + pageName(P, P.cur - 1) + '」を図面だけコピーしました(拾った印・工区・伏図・作業半径は入っていません)。' + (scaleN(c) ? '縮尺 1/' + Math.round(scaleN(c) * 100) / 100 + ' は同じです。' : '') + '書き出しには入れていません');
+}
 /* ── 図面を消す(チェックで選ぶ)→「消した図面」に入る。あとで戻せる ── */
 function pageChecks(list, checked) {
   return list.map((x, i) => `<div class="jrow"><input type="checkbox" id="pc${i}"${checked(x, i) ? ' checked' : ''}><label for="pc${i}"><b>${esc(x.nm)}</b><small>${x.sub}</small></label><span></span></div>`).join('');
@@ -880,11 +1021,10 @@ async function restorePages() {
   push();
   const back = T.filter((x, i) => r.sel[i]).sort((a, b) => a.at - b.at);
   P.trash = T.filter((x, i) => !r.sel[i]);
-  back.forEach(x => P.pages.push(x.pg)); P.pages.sort((a, b) => a.id - b.id);   // 元の並び順(図面は入れた順に番号が付いている)
+  back.forEach(x => P.pages.splice(Math.min(x.at, P.pages.length), 0, x.pg));   // 消す前にあった場所に戻す(並べ替えた順番を崩さない)
   changed(); await saveNow();
   const ni = P.pages.indexOf(back[0].pg); P.cur = -1; await gotoPage(ni, true);
   note(back.map(x => x.nm).join('、') + ' を戻しました(' + back.length + '枚)');
-  toast(back.length + '枚の図面を戻しました');
 }
 
 /* 書き出し(Excel・PDF)と工区毎P算出に使う図面: 選んだ図面だけ。伏図を囲んだ図面は、その範囲の中の拾いだけ */
@@ -1154,7 +1294,7 @@ document.addEventListener('keydown', e => {
   if (!P || $('draw').classList.contains('hidden')) return;
   if (!$('dlgBg').classList.contains('hidden') || !$('bsheet').classList.contains('hidden')) return;   // 入力の窓・一覧が出ている間は効かせない
   if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
-  if (e.key === 'Escape') { S.pend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') setMode('sec'); hidePop(); redraw(); }
+  if (e.key === 'Escape') { S.pend = null; S.crPend = null; S.zonePts = []; S.scalePts = []; S.secPts = []; S.zmove = null; if (S.mode === 'zcopy') setMode('sec'); hidePop(); redraw(); }
   else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && S.mode !== 'review') {   // ← → で前後の図面(部材の切り替えはキーなし)
     e.preventDefault(); const d = e.key === 'ArrowRight' ? 1 : -1, i = P.cur + d;

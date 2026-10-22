@@ -82,6 +82,24 @@ const PrintPdf = (() => {
       if (pg.zones.length) parts.push(zoneOfMark(pg, o) || '工区外');
       label(parts.join(' '), o.x * k + pt(4.5), o.y * k, col, 5.5, 'left', true);
     });
+    // 作業半径(ラフタ)
+    if (pg.scale) (pg.cranes || []).forEach(c => {
+      const cx = c.x * k, cy = c.y * k;
+      c.rings.forEach((rg, idx) => {
+        const r = rg.mm / pg.scale * k;
+        ctx.beginPath();
+        if (rg.a0 === undefined) ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        else { ctx.moveTo(cx, cy); ctx.arc(cx, cy, r, rg.a0, rg.a0 + ringArc({ x: 0, y: 0 }, 1, rg.a0, rg.a1).sw); ctx.closePath(); ctx.fillStyle = CR_COL + '0f'; ctx.fill(); }
+        ctx.lineWidth = pt(1.2); ctx.strokeStyle = CR_COL; ctx.stroke();
+        const a = ringDimAngle(rg, idx);
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + r * Math.cos(a), cy + r * Math.sin(a));
+        ctx.setLineDash([pt(3), pt(2)]); ctx.lineWidth = pt(0.7); ctx.stroke(); ctx.setLineDash([]);
+        label('R=' + (rg.mm / 1000).toFixed(1) + 'm', cx + (r + pt(12)) * Math.cos(a), cy + (r + pt(12)) * Math.sin(a), CR_COL, 7, 'center', true);
+      });
+      ctx.beginPath(); ctx.arc(cx, cy, pt(3), 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.lineWidth = pt(1.2); ctx.strokeStyle = CR_COL; ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cx - pt(5), cy); ctx.lineTo(cx + pt(5), cy); ctx.moveTo(cx, cy - pt(5)); ctx.lineTo(cx, cy + pt(5)); ctx.lineWidth = pt(0.8); ctx.stroke();
+      label(c.name, cx, cy + pt(10), CR_COL, 7, 'center', true);
+    });
     // 見出し(左上)
     label((P.name === pageName(P, pi) ? '' : P.name + '  ') + pageName(P, pi) + (pg.scale ? '  1/' + Math.round(scaleN(pg) * 100) / 100 : '  縮尺未設定'), pt(14), pt(12), '#2b2620', 8, 'left');
     return { c, wPt: src.w / RS, hPt: src.h / RS };
