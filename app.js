@@ -31,7 +31,7 @@ const TAP_R = 16;                       // タップで印を選ぶ範囲(画面
 const SNAP_R = 14;                      // 線の端・図面の線に吸い付く範囲(画面の px)
 
 let P = null;                           // 開いている案件
-const S = { hl: false, mode: 'pick', pend: null, zonePts: [], scalePts: [], secPts: [], zc: null, zmove: null, ortho: false, rev: { list: [], i: 0, filter: 'todo' } };
+const S = { pgSel: new Set(), hl: false, mode: 'pick', pend: null, zonePts: [], scalePts: [], secPts: [], zc: null, zmove: null, ortho: false, rev: { list: [], i: 0, filter: 'todo' } };
 const docs = {};                        // file id → pdf.js の文書 / 画像
 let A = null;                           // 集計(変わったら作り直す)
 
@@ -72,7 +72,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v26';   // sw.js の VER と同じ番号にする
+const APP_VER = 'v27';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -894,10 +894,53 @@ function openSheet(title, render, searchable) {
 }
 function closeSheet() {
   $('sheetBg').classList.add('hidden'); $('bsheet').classList.add('hidden');
+  if (S.pgSel) S.pgSel.clear();
   if (S.reordered) { S.reordered = false; note('図面の順番を変えました。Excel・PDF・工区毎P算出の「数量1・数量2…」も、この順番になります'); }
 }
 $('sheetBg').onclick = closeSheet; $('bsClose').onclick = closeSheet;
 
+/* ── 部材の並べ替え・絞り込み: 部材を選ぶ・部材の編集・台帳の集計の3か所。
+   並べ替えは部材の順番そのもの(Excel の順番も変わる)。絞り込みは見た目だけで、画面ごとに別々に覚える ── */
+const FLT0 = { w: '', b: '', c: '', k: '' };
+S.flt = { pick: { ...FLT0 }, items: { ...FLT0 }, ledger: { ...FLT0 } }; S.toolsOpen = {};
+const fltOn = f => !!(f.w || f.b || f.c || f.k);
+function filterItems(list, f) {
+  return list.filter(it => (!f.w || (f.w === 'has') === (it.w > 0)) && (!f.b || (f.b === 'has') === (it.bolt > 0)) && (!f.c || catOf(it) === f.c) && (!f.k || it.kind === f.k));
+}
+const SORTS = [['id', '入れた順'], ['name', '名前'], ['w', '重さ'], ['bolt', 'ボルト']];
+function curSort() { const so = P.itemSort; return so && so.n === P.items.length ? so : { k: 'id', dir: 1 }; }   // 部材が増減したら並べ替えの表示は外す
+function itemTools(scope, shown, total) {
+  const f = S.flt[scope], so = curSort();
+  const sel = (key, opts) => `<select data-f="${key}">${opts.map(([v, l]) => `<option value="${v}"${f[key] === v ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  return `<details class="itools" data-scope="${scope}"${S.toolsOpen[scope] ? ' open' : ''}><summary>並べ替え・絞り込み${fltOn(f) ? ` <b>絞り込み中 ${shown} / ${total}</b>` : ''}</summary>
+    <div class="srt"><span>並べ替え</span>${SORTS.map(([k, l]) => `<button data-sort="${k}" class="${so.k === k ? 'on' : ''}">${l}${so.k === k && k !== 'id' ? (so.dir > 0 ? ' ▲' : ' ▼') : ''}</button>`).join('')}</div>
+    <div class="flt"><label>重さ${sel('w', [['', '全部'], ['has', '入っている'], ['none', '未設定']])}</label><label>ボルト${sel('b', [['', '全部'], ['has', '入っている'], ['none', '未設定']])}</label>
+      <label>柱/G/B/他${sel('c', [['', '全部'], ...CATS.map(c => [c, c])])}</label><label>種類${sel('k', [['', '全部'], ...Object.keys(KIND).map(k => [k, KIND[k].lbl])])}</label></div>
+    ${fltOn(f) ? '<button class="fclr" data-fclr="1">絞り込みを解除</button>' : ''}<p class="tnote">並べ替えると、Excel の部材の順番も変わります。絞り込みは見た目だけです。</p></details>`;
+}
+function bindItemTools(scope, rerender) {
+  const box = document.querySelector(`.itools[data-scope="${scope}"]`); if (!box) return;
+  box.addEventListener('toggle', () => { S.toolsOpen[scope] = box.open; });
+  box.querySelectorAll('[data-sort]').forEach(b => b.onclick = () => { sortItems(b.dataset.sort); rerender(); });
+  box.querySelectorAll('select[data-f]').forEach(x => x.onchange = () => { S.flt[scope][x.dataset.f] = x.value; rerender(); });
+  const c = box.querySelector('[data-fclr]'); if (c) c.onclick = () => { S.flt[scope] = { ...FLT0 }; rerender(); };
+}
+function sortItems(k) {
+  const cur = curSort(), dir = cur.k === k && k !== 'id' ? -cur.dir : 1;
+  push();
+  P.items.sort((a, b) => {
+    if (k === 'w' || k === 'bolt') { const va = a[k] || 0, vb = b[k] || 0; if (!va !== !vb) return va ? -1 : 1; return (va - vb) * dir || a.id - b.id; }   // 未設定はいつも最後
+    if (k === 'name') return natCmp(a.name, b.name) * dir || a.id - b.id;
+    return a.id - b.id;
+  });
+  P.itemSort = { k, dir, n: P.items.length }; changed();
+  const lbl = { id: '入れた順', name: '名前順', w: '重さ順', bolt: 'ボルト順' }[k] + (k === 'id' ? '' : k === 'name' ? (dir > 0 ? '' : '(逆順)') : dir > 0 ? '(小さい順)' : '(大きい順)');
+  note('部材を' + lbl + 'に並べ替えました。Excel の部材の順番も、この順番になります');
+}
+/* 重さ・ボルトを一覧で見せる(未設定は目立たせる) */
+function specTxt(it) {
+  return (it.w ? it.w + ' ' + KIND[it.kind].wLbl : '<em class="unset">重さ未設定</em>') + ' ・ ' + (it.bolt ? 'ボルト ' + it.bolt : '<em class="unset">ボルト未設定</em>') + ' ・ ' + catOf(it);
+}
 /* 「拾った部材だけ / 全部の部材」の切り替え(画面だけ: 台帳・部材を選ぶ。Excel は「書き出し」で別に選ぶ) */
 function usedTg() {
   const n = P.items.length, u = P.items.filter(it => agg().T[it.id].n).length;
@@ -910,20 +953,22 @@ function bindUsedTg(after) {
 function openItemSheet() {
   openSheet('部材を選ぶ', q => {
     const a = agg(), ql = q.toLowerCase();
-    const list = q ? P.items.filter(it => it.name.toLowerCase().includes(ql)) : shownItems(P, a, P.activeItem);   // 探すときは全部から
+    const base = q ? P.items.filter(it => it.name.toLowerCase().includes(ql)) : shownItems(P, a, P.activeItem);   // 探すときは全部から
+    const list = filterItems(base, S.flt.pick);
     const rows = list.map((it, k) => {
       const T = a.T[it.id], c = a.PG[it.id][P.cur] || blank();
       const qq = x => it.kind === 'm' ? (x.mm / 1000).toFixed(1) : String(x.n);
       return grpHead(it, list[k - 1]) + `<div class="row${it.id === P.activeItem ? ' cur' : ''}" data-id="${it.id}"><i class="sw" style="background:${it.color}"></i>
-        <span class="nm">${esc(it.name)}</span><span class="k">${KIND[it.kind].lbl}</span>
+        <span class="nm">${esc(it.name)}<small class="spec">${specTxt(it)}</small></span><span class="k">${KIND[it.kind].lbl}</span>
         <span class="v">${qq(c)} <small>全部 ${qq(T)}${KIND[it.kind].unit}</small></span></div>`;
     }).join('');
-    const emp = !P.items.length ? 'まだ部材がありません' : q ? '見つかりません' : 'まだ拾った部材がありません。上の欄に名前を入れると全部の部材から探せます';
-    $('bsBody').innerHTML = usedTg() + `<div class="list">${rows || '<div class="empty">' + emp + '</div>'}</div>
-      <div class="add"><button id="bsAdd">＋ 部材を追加</button><button id="bsEdit">部材の編集・貼り付け</button></div>`;
+    const emp = !P.items.length ? 'まだ部材がありません' : base.length && !list.length ? '絞り込みに合う部材がありません' : q ? '「' + esc(q) + '」は見つかりません。上の「＋ 部材を追加」で、この名前のまま追加できます' : 'まだ拾った部材がありません。上の欄に名前を入れると全部の部材から探せます';
+    $('bsBody').innerHTML = `<div class="add"><button id="bsAdd">＋ 部材を追加${q ? '(「' + esc(q) + '」)' : ''}</button><button id="bsEdit">部材の編集・貼り付け</button></div>`
+      + usedTg() + itemTools('pick', list.length, base.length) + `<div class="list">${rows || '<div class="empty">' + emp + '</div>'}</div>`;
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { P.activeItem = +r.dataset.id; S.pend = null; changed(true); renderItemBar(); redraw(); closeSheet(); if (S.mode !== 'pick') setMode('pick'); });
     bindUsedTg(() => $('bsSearch').oninput());
-    $('bsAdd').onclick = async () => { closeSheet(); const it = await editItem(null); if (it) { P.activeItem = it.id; renderItemBar(); redraw(); } };
+    bindItemTools('pick', () => $('bsSearch').oninput());
+    $('bsAdd').onclick = async () => { const nm = $('bsSearch').value.trim(); closeSheet(); const it = await editItem(null, false, nm); if (it) { P.activeItem = it.id; renderItemBar(); redraw(); } };   // 探していた文字を名前に
     $('bsEdit').onclick = () => { closeSheet(); openItems('draw'); };
   }, true);
 }
@@ -932,24 +977,31 @@ function openPageSheet() {
     const a = agg();
     const rows = P.pages.map((pg, i) => {
       const n = pg.dots.length + pg.lens.length, rv = [...pg.dots, ...pg.lens].filter(o => o.rv).length, sn = scaleN(pg);
-      return `<div class="row${i === P.cur ? ' cur' : ''}" data-i="${i}"><span class="nm">${esc(pageName(P, i))}</span>
+      return `<div class="row${i === P.cur ? ' cur' : ''}" data-i="${i}"><label class="pgck" aria-label="${esc(pageName(P, i))} を選ぶ"><input type="checkbox" data-ck="${pg.id}"${S.pgSel.has(pg.id) ? ' checked' : ''}></label><span class="nm">${esc(pageName(P, i))}</span>
         <span class="v">印 ${n} ・ 見直し ${rv}/${n}<small>${sn ? '1/' + Math.round(sn * 100) / 100 : '縮尺 未設定'}</small></span>
         ${P.pages.length > 1 ? `<span class="mv"><button data-mv="-1" data-i="${i}" aria-label="上へ"${i === 0 ? ' disabled' : ''}>↑</button><button data-mv="1" data-i="${i}" aria-label="下へ"${i === P.pages.length - 1 ? ' disabled' : ''}>↓</button></span>` : ''}</div>`;
     }).join('');
-    $('bsBody').innerHTML = `${P.pages.length ? `<div class="add"><button id="bsScaleAll">全部の図面の縮尺を変える(${P.pages.length}枚)</button></div>` : ''}<div class="list">${rows}</div><div class="add"><button id="bsAddPdf">＋ 図面を追加</button><button id="bsRen">この図面の名前を変える</button></div>
-      ${curPage() ? '<div class="add"><button id="bsCopy">この図面をコピー(図面だけ)</button></div>' : ''}
-      ${curPage() ? `<div class="add"><button id="bsZp">${curPage().zp ? '☑ 書き出しに入れている(押すと外す)' : '☐ 書き出しに入れる'}</button><button id="bsDelPg" style="color:var(--warn)">図面を消す(選んで)</button></div>` : ''}
-      ${(P.trash || []).length ? `<div class="add"><button id="bsTrash">消した図面を戻す(${P.trash.length}枚)</button><button id="bsPurge" style="color:var(--warn)">消した図面を完全に消す</button></div>` : ''}`;
+    const nSel = P.pages.filter(pg => S.pgSel.has(pg.id)).length, cp = curPage();
+    $('bsBody').innerHTML = `<div class="tools2">
+        <button id="bsAddPdf">＋ 図面を追加</button>${cp ? '<button id="bsRen">この図面の名前を変える</button><button id="bsCopy">この図面をコピー(図面だけ)</button>' : ''}
+        ${cp ? `<button id="bsZp">${cp.zp ? '☑ この図面を書き出しに入れている' : '☐ この図面を書き出しに入れる'}</button>` : ''}
+        ${P.pages.length ? `<button id="bsScaleAll">全部の図面の縮尺を変える(${P.pages.length}枚)</button>` : ''}
+        ${(P.trash || []).length ? `<button id="bsTrash">消した図面を戻す(${P.trash.length}枚)</button><button id="bsPurge" class="warn">消した図面を完全に消す</button>` : ''}</div>
+      <div class="delbar${nSel ? ' on' : ''}"><span>${nSel ? 'チェックした ' + nSel + '枚' : '消したい図面に、左のチェックを入れてください'}</span>${nSel ? '<button id="bsSelClr">外す</button><button id="bsDelSel" class="warn">消す</button>' : ''}</div>
+      <div class="list">${rows}</div>`;
+    $('bsBody').querySelectorAll('.pgck').forEach(l => l.onclick = e => e.stopPropagation());
+    $('bsBody').querySelectorAll('[data-ck]').forEach(x => x.onchange = () => { const id = +x.dataset.ck; if (x.checked) S.pgSel.add(id); else S.pgSel.delete(id); const top = $('bsBody').scrollTop; openPageSheet(); $('bsBody').scrollTop = top; });
+    if ($('bsSelClr')) $('bsSelClr').onclick = () => { S.pgSel.clear(); openPageSheet(); };
+    if ($('bsDelSel')) $('bsDelSel').onclick = () => { const sel = P.pages.map(pg => S.pgSel.has(pg.id)); closeSheet(); deletePages(sel); };
     if ($('bsScaleAll')) $('bsScaleAll').onclick = () => { closeSheet(); scaleAll(); };
     if ($('bsTrash')) $('bsTrash').onclick = () => { closeSheet(); restorePages(); };
     if ($('bsPurge')) $('bsPurge').onclick = () => { closeSheet(); purgePages(); };
     if ($('bsZp')) $('bsZp').onclick = () => { push(); const pg = curPage(); if (pg.zp) delete pg.zp; else pg.zp = true; changed(); closeSheet(); toast(pageName(P, P.cur) + ' を書き出しに' + (pg.zp ? '入れます' : '入れません')); };
-    if ($('bsDelPg')) $('bsDelPg').onclick = () => { closeSheet(); deletePages(); };
     $('bsBody').querySelectorAll('.row').forEach(r => r.onclick = () => { closeSheet(); gotoPage(+r.dataset.i, true); });
     $('bsBody').querySelectorAll('[data-mv]').forEach(b => b.onclick = e => { e.stopPropagation(); movePage(+b.dataset.i, +b.dataset.mv); });
     if ($('bsCopy')) $('bsCopy').onclick = () => { closeSheet(); copyPage(); };
     $('bsAddPdf').onclick = () => { closeSheet(); filesFor = 'add'; $('fFiles').value = ''; $('fFiles').click(); };
-    $('bsRen').onclick = async () => { closeSheet(); if (!curPage()) return; const v = await askText('図面の名前', '工区毎P算出などの見出しに使います', pageName(P, P.cur)); if (v && v.trim()) { push(); curPage().name = v.trim(); changed(); $('pageLbl').textContent = pageName(P, P.cur); } };
+    if ($('bsRen')) $('bsRen').onclick = async () => { closeSheet(); if (!curPage()) return; const v = await askText('図面の名前', '工区毎P算出などの見出しに使います', pageName(P, P.cur)); if (v && v.trim()) { push(); curPage().name = v.trim(); changed(); $('pageLbl').textContent = pageName(P, P.cur); } };
   }, false);
 }
 $('btnPage').onclick = openPageSheet;
@@ -980,9 +1032,15 @@ async function copyPage() {
 function pageChecks(list, checked) {
   return list.map((x, i) => `<div class="jrow"><input type="checkbox" id="pc${i}"${checked(x, i) ? ' checked' : ''}><label for="pc${i}"><b>${esc(x.nm)}</b><small>${x.sub}</small></label><span></span></div>`).join('');
 }
-async function deletePages() {
+async function deletePages(pre) {
   const list = P.pages.map((pg, i) => ({ pg, nm: pageName(P, i), sub: '印 ' + (pg.dots.length + pg.lens.length) + (secsOf(pg).length ? ' ・ 伏図 ' + secsOf(pg).length : '') }));
-  const r = await dialog('図面を消す', '<p style="font-size:13px;color:var(--ink2)">消す図面にチェックを入れてください。消した図面は「消した図面を戻す」から、拾った印ごと戻せます。</p>' + pageChecks(list, (x, i) => i === P.cur),
+  if (pre) {     // 図面の一覧でチェックした図面
+    const names = list.filter((x, i) => pre[i]).map(x => x.nm), marks = list.filter((x, i) => pre[i]).reduce((s, x) => s + x.pg.dots.length + x.pg.lens.length, 0);
+    if (!names.length) return;
+    if (!(await confirmDlg('図面を消す', names.join('、') + '(' + names.length + '枚' + (marks ? '・拾った印 ' + marks + '件' : '') + ')を消します。「消した図面を戻す」から、拾った印ごと戻せます。', '消す', 'warn'))) return;
+    S.pgSel.clear();
+  }
+  const r = pre || await dialog('図面を消す', '<p style="font-size:13px;color:var(--ink2)">消す図面にチェックを入れてください。消した図面は「消した図面を戻す」から、拾った印ごと戻せます。</p>' + pageChecks(list, (x, i) => i === P.cur),
     [{ label: 'やめる', value: null }, { label: '消す', cls: 'warn', read: () => { const sel = list.map((x, i) => $('pc' + i).checked); if (!sel.some(Boolean)) { toast('消す図面にチェックを入れてください'); return false; } return sel; } }]);
   if (!Array.isArray(r)) return;
   push(); if (!P.trash) P.trash = [];
@@ -1110,15 +1168,15 @@ function renderLedger() {
       h += '<tr class="foot"><td>計</td>' + Z.blocks.map(b => ZCATS.map(c => `<td>${fz(colT[b + c])}</td>`).join('') + `<td class="sub">${fz(colT[b])}</td>`).join('') + `<td>${fz(all)}</td></tr></table></div>`;
     }
     h += '<div class="sec"><h3>部材 × 工区(全部の伏図の合計)</h3></div><div class="tblWrap"><table class="mx"><tr><th>部材</th>' + zs.map(z => `<th>${esc(z)}</th>`).join('') + (zs.length ? '<th>未割当</th>' : '') + '<th>計</th><th>長さm</th><th>kg</th></tr>';
-    const L = shownItems(P, a);
+    const L0 = shownItems(P, a), L = filterItems(L0, S.flt.ledger);
     L.forEach(it => { const T = a.T[it.id];
       h += `<tr><td>${esc(it.name)}</td>` + cols.map(c => `<td>${qtyTxt(it, a.M[it.id][c])}</td>`).join('') +
         `<td><b>${qtyTxt(it, T)}</b></td><td>${it.kind === 'mem' && T.mm ? (T.mm / 1000).toFixed(2) : ''}</td><td>${T.kg ? n0(T.kg) : ''}</td></tr>`; });
     h += '<tr class="foot"><td>吊/手付</td>' + cols.map(c => { let s = 0, d = 0; P.items.forEach(it => { s += a.M[it.id][c].sl; d += a.M[it.id][c].hd; }); return `<td>${s + d ? s + '/' + d : ''}</td>`; }).join('') + `<td>${t.sl}/${t.hd}</td><td></td><td>${n0(t.kg)}</td></tr></table></div>`;
     h += '<div class="sec"><h3>図面ごとの数</h3></div><div class="tblWrap"><table class="mx"><tr><th>部材</th>' + P.pages.map((pg, i) => `<th>${esc(pageName(P, i))}</th>`).join('') + '<th>計</th></tr>';
     L.forEach(it => { h += `<tr><td>${esc(it.name)}</td>` + P.pages.map((pg, i) => `<td>${qtyTxt(it, a.PG[it.id][i])}</td>`).join('') + `<td><b>${qtyTxt(it, a.T[it.id])}</b></td></tr>`; });
-    body.innerHTML = kpi + h + '</table></div>' + '<div class="sec">' + usedTg() + '</div>';
-    bindUsedTg(renderLedger);
+    body.innerHTML = kpi + '<div class="sec">' + itemTools('ledger', L.length, L0.length) + '</div>' + h + '</table></div>' + '<div class="sec">' + usedTg() + '</div>';
+    bindUsedTg(renderLedger); bindItemTools('ledger', renderLedger);
     body.querySelectorAll('#zmSeg button').forEach(b => b.onclick = () => { zMode = b.dataset.m; renderLedger(); });
     $('zpPick').onclick = async () => { if (await pickZpPages()) renderLedger(); };
   } else if (ledTab === 'check') {
@@ -1171,13 +1229,13 @@ $('btnItems').onclick = () => openItems('ledger');
 $('btnItemsBack').onclick = () => { show(itemsBack); if (itemsBack === 'ledger') renderLedger(); else { renderItemBar(); redraw(); if (S.mode === 'review') startReview(); } };
 $('thIn').onchange = () => { const v = parseFloat($('thIn').value); if (v >= 0) { push(); P.threshold = v; changed(); } };
 function renderItems() {
-  const a = agg();
-  $('itemsBody').innerHTML = '<div class="list">' + (P.items.map((it, i) => {
+  const a = agg(), L = filterItems(P.items, S.flt.items);
+  $('itemsBody').innerHTML = (P.items.length ? itemTools('items', L.length, P.items.length) : '') + '<div class="list">' + (L.map((it, i) => {
     const T = a.T[it.id];
-    return grpHead(it, P.items[i - 1]) + `<div class="row" data-id="${it.id}"><span class="k" style="width:22px">${i + 1}</span><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}</span>
-      <span class="k">${KIND[it.kind].lbl}</span><span class="v">${it.w ? it.w + ' ' + KIND[it.kind].wLbl : (it.kind === 'mem' ? '<span style="color:var(--warn)">単重なし</span>' : '')}
-      <small>${it.bolt ? 'ボルト ' + it.bolt + ' ・ ' : ''}${catOf(it)}${T.n ? ' ・ 拾い ' + T.n : ''}</small></span></div>`;
-  }).join('') || '<div class="empty">部材がありません。右上の「標準の部材」でいつもの部材をまとめて、「＋」で1つずつ、「貼り付け」で Excel から追加できます。</div>') + '</div>';
+    return grpHead(it, L[i - 1]) + `<div class="row" data-id="${it.id}"><span class="k" style="width:22px">${P.items.indexOf(it) + 1}</span><i class="sw" style="background:${it.color}"></i><span class="nm">${esc(it.name)}<small class="spec">${specTxt(it)}</small></span>
+      <span class="k">${KIND[it.kind].lbl}</span><span class="v">${T.n ? '拾い ' + T.n : ''}</span></div>`;
+  }).join('') || (P.items.length ? '<div class="empty">絞り込みに合う部材がありません</div>' : '<div class="empty">部材がありません。右上の「標準の部材」でいつもの部材をまとめて、「＋」で1つずつ、「貼り付け」で Excel から追加できます。</div>')) + '</div>';
+  bindItemTools('items', renderItems);
   $('itemsBody').querySelectorAll('.row').forEach(r => r.onclick = () => editItem(itemOf(P, +r.dataset.id)).then(renderItems));
 }
 /* 部材分割: 仕口ちがい(G24rr など)の部材を作る。単重・種類はそのまま、ボルトだけ変える */
@@ -1222,8 +1280,8 @@ function reassignMark(o, pg) {
   }, true);
 }
 function markCount(it) { return P.pages.reduce((s, pg) => s + pg.dots.filter(d => d.it === it.id).length + pg.lens.filter(l => l.it === it.id).length, 0); }
-async function editItem(it, fromBar) {
-  const isNew = !it, v = it || { name: '', kind: 'mem', w: '', bolt: '', cat: '', color: genColor(P.items.length + 1) };
+async function editItem(it, fromBar, preName) {
+  const isNew = !it, v = it || { name: preName || '', kind: 'mem', w: '', bolt: '', cat: '', color: genColor(P.items.length + 1) };
   const r = await dialog(isNew ? '部材を追加' : '部材を直す', `
     <label>部材名</label><input id="eNm" value="${esc(v.name)}">
     <div class="row2"><div><label>種類</label><select id="eKd">${['pcs', 'm', 'mem'].map(k => `<option value="${k}"${v.kind === k ? ' selected' : ''}>${KIND[k].lbl}</option>`).join('')}</select></div>
