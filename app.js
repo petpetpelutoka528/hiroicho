@@ -72,7 +72,7 @@ async function askText(t, label, val, type) {
   return dialog(t, `<label>${esc(label)}</label><input id="dIn" type="${type || 'text'}" ${type === 'number' ? 'inputmode="decimal"' : ''} value="${esc(val ?? '')}">`,
     [{ label: 'やめる', value: null }, { label: 'OK', cls: 'pri', read: () => $('dIn').value }]);
 }
-const APP_VER = 'v27';   // sw.js の VER と同じ番号にする
+const APP_VER = 'v28';   // sw.js の VER と同じ番号にする
 /* 保存のしかた: 'pc' = そのままダウンロード / 'ios' = 共有の画面から「"ファイル"に保存」(ホーム画面のアプリはダウンロードが効かないため)
    どちらを使うかは、押したボタンで決める(自動では切り替えない) */
 async function shareFile(blob, name, how) {
@@ -1361,6 +1361,7 @@ document.addEventListener('keydown', e => {
   }
 });
 
-if ($('verLbl')) $('verLbl').textContent = APP_VER;   // 最初の画面の「拾い帳」の横に版の番号
+if ($('verLbl')) $('verLbl').textContent = APP_VER;
+if ($('verTop')) $('verTop').textContent = APP_VER;   // 図面の画面: 縮尺の右に版の番号   // 最初の画面の「拾い帳」の横に版の番号
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 renderHome();

@@ -191,7 +191,7 @@ table.zt td,table.zt th{padding:5px 6px}
 .seg.mini.usedTg{padding:0 10px 8px}
 .sec .seg.mini.usedTg{padding:4px 0 0}
 /* 図面の名前が長くても「縮尺」が画面の外に出ないように: 名前のほうを「…」で切る */
-.hscroll #btnPage{flex:0 1 auto;min-width:56px;display:flex;align-items:center;gap:3px;overflow:hidden}
+.hscroll #btnPage{flex:0 1 auto;min-width:40px;display:flex;align-items:center;gap:3px;overflow:hidden}
 #pageLbl{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hscroll #btnScale{flex:none}
 /* 下のモードのボタンを全部1画面に収める(見直し・移動が隠れないように) */
@@ -243,3 +243,5 @@ em.unset{font-style:normal;color:var(--warn);font-weight:700}
 /* 図面の一覧: 名前を途中で切らずに折り返す(P2 と P3 の区別がつくように) */
 #bsBody .row[data-i] .nm{white-space:normal;word-break:break-all;font-size:13px;line-height:1.3}
 #bsBody .row[data-i] .v{font-size:11.5px}
+/* 図面の画面: 縮尺の右に版の番号 */
+.verTop{flex:none;align-self:center;font-size:11px;font-weight:700;color:var(--ink2);padding:0 2px;white-space:nowrap}
